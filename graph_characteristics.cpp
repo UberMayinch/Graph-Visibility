@@ -41,27 +41,6 @@ double AvgDegree(vector<vector<int>>& G)
     return avg;
 }
 
-// vector<vector<int>> VisibilityGraph(vector<double>&y, vector<double>&t)
-// {
-//     int n = y.size();
-//     vector<vector<int>> G(n);
-//     for (int i = 0; i < n; i++)
-//     {
-//         double max_slope = -INFINITY;
-//         double slope = 0;
-//         for (int j = i + 1; j < n; j++)
-//         {
-//             slope = (y[j] - y[i]) / (j - i);
-//             if (slope > max_slope)
-//             {
-//                 G[i].push_back(j);
-//                 G[j].push_back(i);
-//             }
-//         }
-//     }
-//     return G;
-// }
-
 void VisibilityGraphDQ(vector<double>& y, int l, int r, vector<vector<int>>&G){
     if(l >= r){
         return;
@@ -116,7 +95,6 @@ auto start = high_resolution_clock::now();
         string filename = entry.path().filename().string();
         if (filename.substr(0, 6) == "output" && filename.substr(filename.length() - 4) == ".csv") {
             files.push_back(entry.path().string());
-            break;
         }
     }
     
@@ -129,20 +107,18 @@ auto start = high_resolution_clock::now();
         getline(infile, line);
         
         // Read data
+        // run the swap uv script before processing so that v is in the second column
+        // Makes reading much faster.
         while (getline(infile, line)) {
             stringstream ss(line);
             string time_str, u_str, v_str;
             
-            if (getline(ss, time_str, ',') && getline(ss, u_str, ',') && getline(ss, v_str, ',')) {
+            if (getline(ss, time_str, ',') && getline(ss, v_str, ',')) {
                 t.push_back(stof(time_str));
                 y.push_back(stof(v_str));
             }
         }
         infile.close();
-// if (t.size() > 10000) {
-//     t.resize(10000);
-//     y.resize(10000);
-// }
 
         // Construct visibility graph and calculate metrics
         int n = y.size();
@@ -167,3 +143,5 @@ auto start = high_resolution_clock::now();
 auto end = high_resolution_clock::now();
 cout << "Elapsed: " << duration_cast<milliseconds>(end - start).count() << " ms\n";
 }
+
+// this whole script took 8335620 ms to run last time ~2 hours 18 min

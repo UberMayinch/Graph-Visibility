@@ -5,6 +5,7 @@ vector<vector<int>> VisibilityGraphNaive(vector<double>&y, vector<double>&t)
 {
     int n = y.size();
     vector<vector<int>> G(n);
+    #pragma omp parallel for
     for (int i = 0; i < n; i++)
     {
         double max_slope = -INFINITY;
@@ -14,8 +15,11 @@ vector<vector<int>> VisibilityGraphNaive(vector<double>&y, vector<double>&t)
             slope = (y[j] - y[i]) / (j - i);
             if (slope > max_slope)
             {
-                G[i].push_back(j);
-                G[j].push_back(i);
+                #pragma omp critical
+                {
+                    G[i].push_back(j);
+                    G[j].push_back(i);
+                }
                 max_slope = slope; 
             }
         }
@@ -68,13 +72,13 @@ void VisibilityGraphDQ(vector<double>& y, int l, int r, vector<vector<int>>&G){
 
 int main(){
     // Test with smaller dataset first
-    int n = 100000;
+    int n = 10000000;
     vector<double> y(n), t(n);
     srand(42); // Fixed seed for reproducible results
     
     for(int i = 0; i < n; i++){
         t[i] = i;
-        y[i] = rand() % 10000 + 1;
+        y[i] = rand() % 100000 + 1;
     }
     
     // Print first few values for debugging
@@ -84,38 +88,38 @@ int main(){
     }
     cout << endl;
     
-    // Benchmark naive approach
-    auto start = chrono::high_resolution_clock::now();
-    vector<vector<int>> G1 = VisibilityGraphNaive(y, t);
-    auto end = chrono::high_resolution_clock::now();
-    auto naive_time = chrono::duration_cast<chrono::milliseconds>(end - start);
+    // // Benchmark naive approach
+    // auto start = chrono::high_resolution_clock::now();
+    // vector<vector<int>> G1 = VisibilityGraphNaive(y, t);
+    // auto end = chrono::high_resolution_clock::now();
+    // auto naive_time = chrono::duration_cast<chrono::milliseconds>(end - start);
     
     // Benchmark divide and conquer approach
     vector<vector<int>> G2(n);
-    start = chrono::high_resolution_clock::now();
+    auto start = chrono::high_resolution_clock::now();
     VisibilityGraphDQ(y, 0, n-1, G2);  // Fixed: should be n-1, not n
-    end = chrono::high_resolution_clock::now();
+    auto end = chrono::high_resolution_clock::now();
     auto dq_time = chrono::duration_cast<chrono::milliseconds>(end - start);
     
-    // Compare graphs
-    bool graphs_identical = true;
-    for(int i = 0; i < n; i++){
-        set<int> s1(G1[i].begin(), G1[i].end());
-        set<int> s2(G2[i].begin(), G2[i].end());
-        if(s1 != s2){
-            graphs_identical = false;
-            cout << "Difference at node " << i << ":" << endl;
-            cout << "Naive: ";
-            for(int x : s1) cout << x << " ";
-            cout << "\nDQ: ";
-            for(int x : s2) cout << x << " ";
-            cout << endl;
-            break;
-        }
-    }
+    // // Compare graphs
+    // bool graphs_identical = true;
+    // for(int i = 0; i < n; i++){
+    //     set<int> s1(G1[i].begin(), G1[i].end());
+    //     set<int> s2(G2[i].begin(), G2[i].end());
+    //     if(s1 != s2){
+    //         graphs_identical = false;
+    //         cout << "Difference at node " << i << ":" << endl;
+    //         cout << "Naive: ";
+    //         for(int x : s1) cout << x << " ";
+    //         cout << "\nDQ: ";
+    //         for(int x : s2) cout << x << " ";
+    //         cout << endl;
+    //         break;
+    //     }
+    // }
     
-    cout << "Graphs are " << (graphs_identical ? "identical" : "different") << endl;
-    cout << "Naive approach time: " << naive_time.count() << " ms" << endl;
+    // cout << "Graphs are " << (graphs_identical ? "identical" : "different") << endl;
+    // cout << "Naive approach time: " << naive_time.count() << " ms" << endl;
     cout << "Divide & Conquer time: " << dq_time.count() << " ms" << endl;
     
     return 0;
