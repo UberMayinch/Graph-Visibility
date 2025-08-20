@@ -15,10 +15,11 @@ subprocess.run(dir_cmd, shell=True, check=True)
 
 # %%
 np.random.seed(42)
-stabilizing_time = 2000
+random.seed(42)
+stabilizing_time = 5000
 window_size = 1
 precision_degree = 6
-num_params = 21
+num_params = 101
 
 # %% [markdown]
 # ## Helper Functions
@@ -120,7 +121,7 @@ def process_timeseries(A, timeseries_dataframes, col_string1, col_string2, model
 
 # %%
 
-def bifurcationdiagram(timeseries_dataframes, col="u"):
+def bifurcationdiagram(timeseries_dataframes, col="u", model="fhn", initial_conds="./"):
     all_peak_data = []
     for a, df in timeseries_dataframes.items():
         # Extract local optima for this 'a'
@@ -142,7 +143,7 @@ def bifurcationdiagram(timeseries_dataframes, col="u"):
     plt.ylabel("Local optima of a")
     plt.title("Bifurcation Diagram for Timeseries")
     plt.grid(True)
-    plt.show()
+    plt.savefig(f'plots/{model}/{initial_conds}/bifurcation.png')
 
     return 
 
@@ -182,7 +183,6 @@ def plotGraphMetrics(x, y, model='linard'):
 
         plt.tight_layout()
         plt.savefig(f'plots/{model}/{x0}_{y0}/graph_metrics.png')
-        plt.show()
 
         subprocess.run(f"./swap_uv.sh data/{model}/{x0}_{y0}", shell=True, check=True)
 
@@ -254,7 +254,7 @@ for (u0, v0) in zip(u, v):
 # %%
 for (u0, v0) in zip(u, v):
     print(f"Initial conditions: u0 = {u0}, v0 = {v0}")
-    bifurcationdiagram(fhn_dataframes[(u0, v0)])
+    bifurcationdiagram(fhn_dataframes[(u0, v0)], initial_conds=f"./{u0}_{v0}", model="fhn")
 
 # %%
 plotGraphMetrics(u, v, "fhn")
@@ -314,7 +314,7 @@ for (x0, y0) in zip(x, y):
 # %%
 for (x0, y0) in zip(x, y):
     print(f"Initial conditions: x0 = {x0}, y0 = {y0}")
-    bifurcationdiagram(linard_dataframes[(x0, y0)], col="x")
+    bifurcationdiagram(fhn_dataframes[(u0, v0)], col = "x", initial_conds=f"./{x0}_{y0}", model="linard")
 
 
 # %%
