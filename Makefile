@@ -24,4 +24,9 @@ clean:
 dirs:
 	mkdir -p data plots data/fhn plots/fhn data/linard plots/linard
 
+wipe:
+	rm -f $(TARGETS)
+	rm -rf data
+	rm -rf plots
+
 .PHONY: all clean dirs

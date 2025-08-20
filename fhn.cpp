@@ -47,7 +47,7 @@ int main(int argc, char** argv){
         cerr << "Error: 'data' directory does not exist" << endl;
         return 1;
     }
-    ofstream outfile(output_directory + "/output_" + string(argv[1]) + "_" + string(argv[2]) + "_" + string(argv[3]) + ".csv");
+    ofstream outfile(output_directory + "/" + string(argv[2]) + "_" + string(argv[3]) + "_output_" + string(argv[1]) + ".csv");
     outfile << "time,u,v" << endl;  
     double t = 0.0;
     double h = 0.01;  
