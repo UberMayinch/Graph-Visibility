@@ -1,25 +1,22 @@
 #!/bin/bash
+# preprocessing script. finds all csv files and exchanges fields 1 and 3 to make reading faster. Also removes . from the end
+# because that makes reading the file names impossible.
 
 # Directory to search; defaults to current directory if not given
 DIR=${1:-.}
 
-# Loop over all CSV files
-for file in "$DIR"/*.csv; do
+# Loop over all CSV files that start with output_
+for file in "$DIR"/output_*.csv; do
     [ -e "$file" ] || continue  # Skip if no csv files exist
 
     tmp_file="${file}.tmp"
 
-    awk -F',' 'NR==1 {
-        # Handle header: swap u and v
-        for (i=1; i<=NF; i++) {
-            if ($i == "u") ui = i;
-            else if ($i == "v") vi = i;
-            else if ($i == "time") ti = i;
-        }
-        print $ti "," $vi "," $ui
-    }
-    NR>1 {
-        print $ti "," $vi "," $ui
+    awk -F',' 'BEGIN{OFS=","} {
+        # Swap column 1 and column 3
+        temp = $1
+        $1 = $3
+        $3 = temp
+        print
     }' "$file" > "$tmp_file" && mv "$tmp_file" "$file"
 
     echo "Processed $file"

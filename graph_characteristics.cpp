@@ -84,10 +84,10 @@ void VisibilityGraphDQ(vector<double>& y, int l, int r, vector<vector<int>>&G){
     VisibilityGraphDQ(y, idx+1, r, G);
 }
 
-int main()
+int main(int argc, char** argv)
 {
 auto start = high_resolution_clock::now();
-    string data_dir = "./data";
+    string data_dir = string(argv[1]);
     vector<string> files;
     
     // Get all output*.csv files
@@ -107,14 +107,14 @@ auto start = high_resolution_clock::now();
         getline(infile, line);
         
         // Read data
-        // run the swap uv script before processing so that v is in the second column
+        // run the swap uv script before processing so that v or y is in the second column
         // Makes reading much faster.
         while (getline(infile, line)) {
             stringstream ss(line);
             string time_str, u_str, v_str;
+            //this is the original order, but v_str will come first after modification.
             
-            if (getline(ss, time_str, ',') && getline(ss, v_str, ',')) {
-                t.push_back(stof(time_str));
+            if (getline(ss, v_str, ',')) {
                 y.push_back(stof(v_str));
             }
         }
@@ -124,13 +124,27 @@ auto start = high_resolution_clock::now();
         int n = y.size();
         vector<vector<int>> graph(n);
         VisibilityGraphDQ(y, 0, n-1, graph);
-        
+
+        // Write visibility graph to file
+        string graph_filename = data_dir + "/graph" + filesystem::path(file).filename().stem().string().substr(6) + ".csv";
+        ofstream graph_file(graph_filename);
+        graph_file << "node,neighbor" << endl;
+        for (int i = 0; i < n; i++) {
+            for (int neighbor : graph[i]) {
+            if (i < neighbor) { // Only write each edge once
+                graph_file << i << "," << neighbor << endl;
+            }
+            else break;
+            }
+        }
+        graph_file.close();
+
         // Extract parameter value from filename (assuming format like "output_param.csv")
         string filename = filesystem::path(file).filename().string();
-        string param = filename.substr(7, filename.length() - 10); // Remove "output_" and ".csv"
+        string param = filename.substr(7, filename.length() - 11); // Remove "output_" and ".csv"
         
         // Write to CSV (open in append mode)
-        ofstream csvfile("graph_metrics.csv", ios::app);
+        ofstream csvfile(data_dir + "graph_metrics.csv", ios::app);
         if (csvfile.tellp() == 0) {
             // Write header if file is empty
             csvfile << "parameter,max_degree,avg_degree" << endl;
