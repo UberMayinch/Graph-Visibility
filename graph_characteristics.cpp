@@ -14,22 +14,6 @@ unsigned long MaxDegree(vector<vector<int>>&G)
     return mx;
 }
 
-double ClusteringCoeff(vector<vector<int>>& G)
-{
-    double c_glob = 0;
-    for (auto node : G)
-    {
-        double edge_tot = 0;
-        for (auto edge : node)
-        {
-            edge_tot += (double)(G[edge].size() / G.size());
-        }
-        double c_loc = edge_tot / node.size();
-        c_glob += c_loc / G.size();
-    }
-    return c_glob;
-}
-
 double AvgDegree(vector<vector<int>>& G)
 {
     double avg = 0;
@@ -97,6 +81,11 @@ auto start = high_resolution_clock::now();
             files.push_back(entry.path().string());
         }
     }
+
+     // Clear the metrics file at the start - FIX
+    ofstream clear_file(data_dir + "/graph_metrics.csv", ios::trunc);
+    clear_file.close();
+    
     
     for (const string& file : files) {
         ifstream infile(file);

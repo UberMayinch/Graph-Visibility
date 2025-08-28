@@ -40,7 +40,7 @@ int main(int argc, char** argv){
     double u0=atof(argv[2]);
     double v0=atof(argv[3]);
 
-    int num_steps=10000;
+    int num_steps=200000;
     string output_directory = "data/fhn";
 
     if (!filesystem::exists(output_directory)){
