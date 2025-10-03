@@ -4,27 +4,6 @@ using namespace std;
 using namespace std::chrono;
 
 
-unsigned long MaxDegree(vector<vector<int>>&G)
-{
-    unsigned long mx = 0;
-    for (auto node : G)
-    {
-        mx = max(mx, node.size());
-    }
-    return mx;
-}
-
-double AvgDegree(vector<vector<int>>& G)
-{
-    double avg = 0;
-    for (auto node : G)
-    {
-        avg += node.size();
-    }
-    avg /= G.size();
-    return avg;
-}
-
 void VisibilityGraphDQ(vector<double>& y, int l, int r, vector<vector<int>>&G){
     if(l >= r){
         return;
@@ -81,10 +60,6 @@ auto start = high_resolution_clock::now();
             files.push_back(entry.path().string());
         }
     }
-
-     // Clear the metrics file at the start - FIX
-    ofstream clear_file(data_dir + "/graph_metrics.csv", ios::trunc);
-    clear_file.close();
     
     
     for (const string& file : files) {
@@ -114,8 +89,9 @@ auto start = high_resolution_clock::now();
         vector<vector<int>> graph(n);
         VisibilityGraphDQ(y, 0, n-1, graph);
 
-        // Write visibility graph to file
-        string graph_filename = data_dir + "/graph" + filesystem::path(file).filename().stem().string().substr(6) + ".csv";
+        // Write visibility graph to file format -> unweighted_graph_{init_conds}.csv
+
+        string graph_filename = data_dir + "/unweighted_graph" + filesystem::path(file).filename().stem().string().substr(6) + ".csv";
         ofstream graph_file(graph_filename);
         graph_file << "node,neighbor" << endl;
         for (int i = 0; i < n; i++) {
@@ -128,18 +104,6 @@ auto start = high_resolution_clock::now();
         }
         graph_file.close();
 
-        // Extract parameter value from filename (assuming format like "output_param.csv")
-        string filename = filesystem::path(file).filename().string();
-        string param = filename.substr(7, filename.length() - 11); // Remove "output_" and ".csv"
-        
-        // Write to CSV (open in append mode)
-        ofstream csvfile(data_dir + "graph_metrics.csv", ios::app);
-        if (csvfile.tellp() == 0) {
-            // Write header if file is empty
-            csvfile << "parameter,max_degree,avg_degree" << endl;
-        }
-        csvfile << param << "," << MaxDegree(graph) << "," << AvgDegree(graph) << endl;
-        csvfile.close();
     }
 
 // compute time

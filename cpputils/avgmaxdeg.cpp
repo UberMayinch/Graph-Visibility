@@ -24,3 +24,7 @@ double AvgDegree(vector<vector<int>>& G)
     avg /= G.size();
     return avg;
 }
+
+int main(){
+    cout << "HI" << endl;
+}

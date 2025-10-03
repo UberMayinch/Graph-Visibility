@@ -1,0 +1,69 @@
+{
+  "general": {
+    "random_seed": 42,
+    "stabilizing_time": 40000,
+    "window_size": 1,
+    "precision_degree": 6,
+    "num_params": 101
+  },
+  "simulation": {
+    "fhn_num_steps": 200000,
+    "linard_num_steps": 10000
+  },
+  "fhn": {
+    "enabled": true,
+    "initial_conditions": {
+      "u_count": 5,
+      "v_count": 5,
+      "u_base": -0.2,
+      "u_range": 0.001,
+      "v_base": -0.002,
+      "v_range": 0.0001
+    },
+    "parameters": {
+      "A_min": 0.62,
+      "A_max": 0.63,
+      "column_u": "u",
+      "column_v": "v"
+    },
+    "analysis": {
+      "process_timeseries": true,
+      "bifurcation_diagram": true,
+      "construct_graphs": true,
+      "weighted_degree_summary": true,
+      "unweighted_degree_summary": true,
+      "plot_metrics": true
+    }
+  },
+  "linard": {
+    "enabled": true,
+    "initial_conditions": {
+      "x_count": 10,
+      "y_count": 10,
+      "x_base": 0.0,
+      "x_range": 1.0,
+      "y_base": 0.0,
+      "y_range": 1.0
+    },
+    "parameters": {
+      "omega_min": 0.64,
+      "omega_max": 0.74,
+      "column_x": "x",
+      "column_y": "y"
+    },
+    "analysis": {
+      "process_timeseries": true,
+      "bifurcation_diagram": true,
+      "construct_graphs": true,
+      "plot_metrics": true
+    }
+  },
+  "paths": {
+    "data_dir": "data",
+    "plots_dir": "plots"
+  },
+  "output_files": {
+    "weighted_degree_stats": "weighted_degree_stats.csv",
+    "unweighted_degree_stats": "unweighted_degree_stats.csv"
+  }
+}

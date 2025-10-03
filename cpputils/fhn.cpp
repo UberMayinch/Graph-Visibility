@@ -34,13 +34,22 @@ int main(int argc, char** argv){
     params["rho"] = 4.0485;
 
     if(argc < 4){
-        cout << "Usage ./a.out <A_value> <u0_value> <v0_value>" << endl;
+        cout << "Usage ./a.out <A_value> <u0_value> <v0_value> [num_steps]" << endl;
+        return 1;
     }
     params["A"] = atof(argv[1]);
     double u0=atof(argv[2]);
     double v0=atof(argv[3]);
 
-    int num_steps=200000;
+    // Default number of steps, can be overridden by command line argument
+    int num_steps = 200000;
+    if(argc >= 5){
+        num_steps = atoi(argv[4]);
+        if(num_steps <= 0){
+            cout << "Error: num_steps must be positive" << endl;
+            return 1;
+        }
+    }
     string output_directory = "data/fhn";
 
     if (!filesystem::exists(output_directory)){

@@ -1,19 +1,16 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -O2 -Wall
 
-# Find all .cpp and .cu files and create corresponding targets
-CPP_SOURCES = $(wildcard *.cpp)
-CPP_TARGETS = $(CPP_SOURCES:.cpp=)
-TARGETS = $(CPP_TARGETS) 
+# Find all .cpp files in cpputils directory and create corresponding targets
+CPP_SOURCES = $(wildcard cpputils/*.cpp)
+CPP_TARGETS = $(patsubst cpputils/%.cpp,%,$(CPP_SOURCES))
+TARGETS = $(CPP_TARGETS)
 
-# Default target - explicitly build all targets
+# Default target - build all executables
 all: $(TARGETS)
 
-# Rule to compile each .cpp file to its corresponding executable
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-%: %.cpp
+# Rule to compile each .cpp file from cpputils to executable in root directory
+%: cpputils/%.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@
 
 # Clean target
@@ -24,9 +21,15 @@ clean:
 dirs:
 	mkdir -p data plots data/fhn plots/fhn data/linard plots/linard
 
+# Remove executables and directories
 wipe:
 	rm -f $(TARGETS)
 	rm -rf data
 	rm -rf plots
 
-.PHONY: all clean dirs
+# Show what targets will be built
+show-targets:
+	@echo "CPP Sources: $(CPP_SOURCES)"
+	@echo "Targets: $(TARGETS)"
+
+.PHONY: all clean dirs wipe show-targets
