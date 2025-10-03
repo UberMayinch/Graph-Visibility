@@ -304,7 +304,39 @@ class SystemAnalyzer:
         ic1, ic2 = initial_conditions
         constructGraphs(ic1, ic2, model)
         
+        # Calculate advanced graph metrics if enabled
+        if self.config.get('execution_mode', {}).get('calculate_advanced_metrics', True):
+            self._calculate_advanced_graph_metrics(model, initial_conditions)
+        
         print(f"✓ {model.upper()} visibility graphs completed")
+    
+    def _calculate_advanced_graph_metrics(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
+        """Calculate advanced graph metrics using C++ utilities."""
+        print(f"📈 Calculating advanced graph metrics for {model.upper()}...")
+        
+        ic1, ic2 = initial_conditions
+        
+        for ic1_val, ic2_val in zip(ic1, ic2):
+            ic_dir = f"data/{model}/{ic1_val}_{ic2_val}"
+            if not os.path.exists(ic_dir):
+                continue
+            
+            # Find all graph files in the directory (excluding existing metrics files)
+            graph_files = [f for f in os.listdir(ic_dir) 
+                          if 'graph' in f and f.endswith('.csv') and not f.endswith('_metrics.csv')]
+            
+            for graph_file in graph_files:
+                graph_path = os.path.join(ic_dir, graph_file)
+                metrics_file = graph_path.replace('.csv', '_metrics.csv')
+                
+                try:
+                    cmd = f"./graph_metrics {graph_path} {metrics_file}"
+                    subprocess.run(cmd, shell=True, check=True, capture_output=True)
+                except subprocess.CalledProcessError as e:
+                    print(f"⚠️  Warning: Failed to calculate metrics for {graph_file}")
+                    continue
+        
+        print(f"✓ {model.upper()} advanced graph metrics completed")
     
     def analyze_degree_distributions(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
         """Analyze weighted and unweighted degree distributions."""
@@ -403,7 +435,25 @@ class SystemAnalyzer:
         y4_hi = y + 4 * s
         y6_hi = y + 6 * s
 
-        plt.figure(figsize=(8, 4.5))
+        # Get plot configuration
+        plot_config = self.config.get('plot_options', {})
+        fig_size = plot_config.get('figure_size', [8, 4.5])
+        dpi = plot_config.get('dpi', 150)
+        colors = plot_config.get('colors', {})
+        
+        # Set up colors with defaults
+        color_individual = colors.get('individual_lines', '#6c757d')
+        color_mean = colors.get('mean', '#1f77b4')
+        color_4sigma = colors.get('envelope_4sigma', '#2ca02c')
+        color_6sigma = colors.get('envelope_6sigma', '#ff7f0e')
+        
+        # Set up alphas with defaults
+        alpha_individual = plot_config.get('alpha_individual', 0.35)
+        alpha_mean = plot_config.get('alpha_mean', 0.10)
+        alpha_4sigma = plot_config.get('alpha_envelope_4sigma', 0.20)
+        alpha_6sigma = plot_config.get('alpha_envelope_6sigma', 0.10)
+
+        plt.figure(figsize=fig_size)
 
         # Plot each realisation (IC) as dotted line with low opacity
         ic_groups = all_df.groupby("ic")
@@ -413,23 +463,23 @@ class SystemAnalyzer:
                 g["param"].values,
                 g["metric"].values,
                 linestyle=":",
-                color="#6c757d",
-                alpha=0.35,
+                color=color_individual,
+                alpha=alpha_individual,
                 lw=1.0,
                 label="realisations" if first else None,
             )
             first = False
 
         # One-sided upper envelopes with different colors
-        plt.fill_between(x, y, y6_hi, color="#ff7f0e", alpha=0.10, label="+6σ")
-        plt.fill_between(x, y, y4_hi, color="#2ca02c", alpha=0.20, label="+4σ")
+        plt.fill_between(x, y, y6_hi, color=color_6sigma, alpha=alpha_6sigma, label="+6σ")
+        plt.fill_between(x, y, y4_hi, color=color_4sigma, alpha=alpha_4sigma, label="+4σ")
 
         # Mean line
-        plt.plot(x, y, color="#1f77b4", ls="--", label="mean", alpha=0.10)
+        plt.plot(x, y, color=color_mean, ls="--", label="mean", alpha=alpha_mean)
 
         plt.xlabel(used_param_col if used_param_col is not None else "parameter")
         plt.ylabel(metric_col)
-        plt.title(f"{model}: {metric_col} vs parameter (mean, +4σ, +6σ across ICs)")
+        plt.title(f"{model.upper()}: {metric_col} vs parameter (mean, +4σ, +6σ across ICs)")
         plt.grid(True, ls="--", alpha=0.3)
         plt.legend(loc="best", frameon=False)
         plt.tight_layout()
@@ -439,10 +489,15 @@ class SystemAnalyzer:
             os.makedirs(out_dir, exist_ok=True)
             out_name = f"{metric_col}_envelope_across_ics.png"
             out_path = os.path.join(out_dir, out_name)
-            plt.savefig(out_path, dpi=150)
+            plt.savefig(out_path, dpi=dpi)
             print(f"Saved: {out_path}")
 
-        plt.show()
+        # Show plot based on config
+        show_plots = plot_config.get('show_plots', True)
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
     
     def plot_metrics(self, model: str):
         """Plot various metrics for the model."""
@@ -452,10 +507,37 @@ class SystemAnalyzer:
         
         print(f"📊 Plotting {model.upper()} metrics...")
         
+        # Get plot options from config
+        plot_options = self.config.get('plot_options', {})
+        enabled_metrics = plot_options.get('enabled_metrics', ['avg_degree', 'max_degree'])
+        
         try:
-            # Plot average and max degree envelopes
-            self.plot_metric_envelope_across_ics(model, "avg_degree")
-            self.plot_metric_envelope_across_ics(model, "max_degree")
+            # Plot each enabled metric
+            for metric in enabled_metrics:
+                try:
+                    # Try weighted first, then unweighted
+                    stats_files = ["weighted_degree_stats.csv", "unweighted_degree_stats.csv"]
+                    plotted = False
+                    
+                    for stats_file in stats_files:
+                        try:
+                            self.plot_metric_envelope_across_ics(
+                                model, 
+                                metric, 
+                                stats_filename=stats_file,
+                                save=plot_options.get('save_plots', True)
+                            )
+                            plotted = True
+                            break
+                        except (FileNotFoundError, ValueError) as e:
+                            continue
+                    
+                    if not plotted:
+                        print(f"⚠️  Warning: Could not find metric '{metric}' in any stats file for {model}")
+                        
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to plot metric '{metric}' for {model}: {e}")
+                    
             print(f"✓ {model.upper()} metric plotting completed")
         except Exception as e:
             print(f"⚠️  Warning: Failed to plot metrics for {model}: {e}")
@@ -469,27 +551,51 @@ class SystemAnalyzer:
         print(f"\n🔬 Starting {model.upper()} Analysis")
         print("=" * 50)
         
+        # Check execution mode
+        exec_mode = self.config.get('execution_mode', {})
+        load_existing = exec_mode.get('load_existing_graphs', False)
+        run_until_graphs = exec_mode.get('run_until_graphs', False)
+        skip_simulations = exec_mode.get('skip_simulations', False)
+        
         # Generate initial conditions and parameters
         initial_conditions = self.generate_initial_conditions(model)
         parameters = self.generate_parameter_range(model)
         
-        # Run simulations
-        csv_paths = self.run_simulations(model, initial_conditions, parameters)
-        
-        # Load dataframes
-        if model == 'fhn':
-            col_name = self.config[model]['parameters']['column_u']
-        elif model == 'linard':
-            col_name = self.config[model]['parameters']['column_x']
-        
-        dataframes = self.load_dataframes(model, csv_paths, col_name)
-        
-        # Analysis pipeline
-        self.process_time_series(model, initial_conditions, dataframes, parameters)
-        self.generate_bifurcation_diagrams(model, initial_conditions, dataframes)
-        self.construct_visibility_graphs(model, initial_conditions)
-        self.analyze_degree_distributions(model, initial_conditions)
-        self.plot_metrics(model)
+        if load_existing:
+            print(f"📂 Loading existing graphs for {model.upper()}...")
+            # Skip simulation and data loading, go directly to graph analysis
+            self.construct_visibility_graphs(model, initial_conditions)
+            self.analyze_degree_distributions(model, initial_conditions)
+            self.plot_metrics(model)
+        else:
+            # Standard pipeline or partial execution
+            if not skip_simulations:
+                # Run simulations
+                csv_paths = self.run_simulations(model, initial_conditions, parameters)
+                
+                # Load dataframes
+                if model == 'fhn':
+                    col_name = self.config[model]['parameters']['column_u']
+                elif model == 'linard':
+                    col_name = self.config[model]['parameters']['column_x']
+                
+                dataframes = self.load_dataframes(model, csv_paths, col_name)
+                
+                # Analysis pipeline
+                self.process_time_series(model, initial_conditions, dataframes, parameters)
+                self.generate_bifurcation_diagrams(model, initial_conditions, dataframes)
+            
+            # Graph construction and analysis
+            self.construct_visibility_graphs(model, initial_conditions)
+            
+            # Stop here if run_until_graphs is True
+            if run_until_graphs:
+                print(f"🛑 Stopping after graph generation for {model.upper()} (run_until_graphs=True)")
+                return
+            
+            # Continue with post-graph analysis
+            self.analyze_degree_distributions(model, initial_conditions)
+            self.plot_metrics(model)
         
         print(f"✅ {model.upper()} analysis completed!\n")
     
@@ -544,6 +650,24 @@ def main():
         help='Enable verbose output'
     )
     
+    parser.add_argument(
+        '--run-until-graphs',
+        action='store_true',
+        help='Stop execution after generating graphs'
+    )
+    
+    parser.add_argument(
+        '--load-existing-graphs',
+        action='store_true',
+        help='Skip simulations and load existing graphs for analysis'
+    )
+    
+    parser.add_argument(
+        '--skip-simulations',
+        action='store_true',
+        help='Skip simulation step (assumes data already exists)'
+    )
+    
     args = parser.parse_args()
     
     # Set up matplotlib for non-interactive use if needed
@@ -554,6 +678,14 @@ def main():
     try:
         # Initialize analyzer
         analyzer = SystemAnalyzer(args.config)
+        
+        # Override config with command line arguments if provided
+        if args.run_until_graphs:
+            analyzer.config['execution_mode']['run_until_graphs'] = True
+        if args.load_existing_graphs:
+            analyzer.config['execution_mode']['load_existing_graphs'] = True
+        if args.skip_simulations:
+            analyzer.config['execution_mode']['skip_simulations'] = True
         
         # Determine which models to run
         if args.model == 'all':

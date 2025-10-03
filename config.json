@@ -6,6 +6,37 @@
     "precision_degree": 6,
     "num_params": 101
   },
+  "execution_mode": {
+    "run_until_graphs": false,
+    "load_existing_graphs": false,
+    "skip_simulations": false,
+    "calculate_advanced_metrics": true
+  },
+  "plot_options": {
+    "enabled_metrics": [
+      "avg_degree",
+      "max_degree", 
+      "degree_entropy",
+      "avg_path_length",
+      "clustering_coefficient",
+      "density",
+      "mean_degree"
+    ],
+    "figure_size": [8, 4.5],
+    "dpi": 150,
+    "alpha_individual": 0.35,
+    "alpha_envelope_4sigma": 0.20,
+    "alpha_envelope_6sigma": 0.10,
+    "alpha_mean": 0.10,
+    "colors": {
+      "individual_lines": "#6c757d",
+      "mean": "#1f77b4",
+      "envelope_4sigma": "#2ca02c", 
+      "envelope_6sigma": "#ff7f0e"
+    },
+    "save_plots": true,
+    "show_plots": true
+  },
   "simulation": {
     "fhn_num_steps": 200000,
     "linard_num_steps": 10000

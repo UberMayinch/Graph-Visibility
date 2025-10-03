@@ -71,14 +71,15 @@ auto start = high_resolution_clock::now();
         getline(infile, line);
         
         // Read data
-        // run the swap uv script before processing so that v or y is in the second column
-        // Makes reading much faster.
+        // Parse CSV: time,u,v - use v column for visibility graph
         while (getline(infile, line)) {
             stringstream ss(line);
             string time_str, u_str, v_str;
-            //this is the original order, but v_str will come first after modification.
             
-            if (getline(ss, v_str, ',')) {
+            if (getline(ss, time_str, ',') && 
+                getline(ss, u_str, ',') && 
+                getline(ss, v_str, ',')) {
+                // Use the v column (third column)
                 y.push_back(stof(v_str));
             }
         }
