@@ -26,6 +26,9 @@ import subprocess
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Tuple, Any, Optional
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from functools import partial
+import multiprocessing as mp
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -163,35 +166,60 @@ class SystemAnalyzer:
         else:
             raise ValueError(f"Unknown model: {model}")
     
+    def _run_single_simulation(self, args):
+        """Run a single simulation (for parallel execution)."""
+        model, param, ic1_val, ic2_val, num_steps = args
+        
+        # Create directory for this initial condition
+        make_dir_cmd = f"mkdir -p -- data/{model}/{ic1_val}_{ic2_val}"
+        subprocess.run(make_dir_cmd, shell=True)
+        
+        # Run simulation
+        cmd = f"./{model} {param} {ic1_val} {ic2_val} {num_steps}"
+        try:
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            return (ic1_val, ic2_val, param, f"data/{model}/{ic1_val}_{ic2_val}/output_{param}.csv")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  Warning: Simulation failed for {model} with params {param}, {ic1_val}, {ic2_val}")
+            return None
+    
     def run_simulations(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray], 
                        parameters: np.ndarray) -> Dict[Tuple[float, float], Dict[float, str]]:
-        """Run simulations for all parameter values and initial conditions."""
+        """Run simulations for all parameter values and initial conditions in parallel."""
         ic1, ic2 = initial_conditions
         csv_paths = defaultdict(dict)
         
-        print(f"🚀 Running {model.upper()} simulations...")
+        print(f"🚀 Running {model.upper()} simulations in parallel...")
         
-        # Create paths dictionary
+        # Get number of steps from configuration
+        num_steps = self.config['simulation'][f'{model}_num_steps']
+        
+        # Prepare all simulation tasks
+        simulation_tasks = []
         for ic1_val, ic2_val in zip(ic1, ic2):
             for param in parameters:
-                csv_paths[(ic1_val, ic2_val)][param] = f"data/{model}/{ic1_val}_{ic2_val}/output_{param}.csv"
+                simulation_tasks.append((model, param, ic1_val, ic2_val, num_steps))
         
-        # Run simulations
-        for ic1_val, ic2_val in zip(ic1, ic2):
-            # Create directory for this initial condition
-            make_dir_cmd = f"mkdir -p -- data/{model}/{ic1_val}_{ic2_val}"
-            subprocess.run(make_dir_cmd, shell=True)
+        # Run simulations in parallel
+        max_workers = min(mp.cpu_count(), len(simulation_tasks))
+        print(f"Using {max_workers} parallel workers for {len(simulation_tasks)} simulations")
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_task = {executor.submit(self._run_single_simulation, task): task 
+                            for task in simulation_tasks}
             
-            # Run simulation for each parameter value
-            for param in parameters:
-                # Get number of steps from configuration
-                num_steps = self.config['simulation'][f'{model}_num_steps']
-                cmd = f"./{model} {param} {ic1_val} {ic2_val} {num_steps}"
-                try:
-                    subprocess.run(cmd, shell=True, check=True, capture_output=True)
-                except subprocess.CalledProcessError as e:
-                    print(f"⚠️  Warning: Simulation failed for {model} with params {param}, {ic1_val}, {ic2_val}")
-                    continue
+            # Collect results
+            completed = 0
+            for future in as_completed(future_to_task):
+                result = future.result()
+                if result is not None:
+                    ic1_val, ic2_val, param, path = result
+                    csv_paths[(ic1_val, ic2_val)][param] = path
+                
+                completed += 1
+                if completed % 10 == 0 or completed == len(simulation_tasks):
+                    print(f"Progress: {completed}/{len(simulation_tasks)} simulations completed")
         
         print(f"✓ {model.upper()} simulations completed")
         return csv_paths
@@ -293,16 +321,54 @@ class SystemAnalyzer:
         
         print(f"✓ {model.upper()} bifurcation diagrams completed")
     
+    def _construct_single_ic_graphs(self, args):
+        """Construct graphs for a single initial condition (for parallel execution)."""
+        x0, y0, model = args
+        folder_path = f"data/{model}/{x0}_{y0}"
+        
+        try:
+            # Construct graphs using optimized C++ utilities
+            weighted_command = f"./weighted_construct {folder_path}/"
+            unweighted_command = f"./unweighted_construct {folder_path}/"
+            
+            subprocess.run(weighted_command, shell=True, check=True, capture_output=True)
+            subprocess.run(unweighted_command, shell=True, check=True, capture_output=True)
+            return (x0, y0, True)
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  Warning: Graph construction failed for {model} IC ({x0}, {y0})")
+            return (x0, y0, False)
+    
     def construct_visibility_graphs(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
-        """Construct visibility graphs."""
+        """Construct visibility graphs in parallel."""
         if not self.config[model]['analysis']['construct_graphs']:
             print(f"⏭️  Skipping graph construction for {model.upper()}")
             return
         
-        print(f"🕸️  Constructing {model.upper()} visibility graphs...")
+        print(f"🕸️  Constructing {model.upper()} visibility graphs in parallel...")
         
         ic1, ic2 = initial_conditions
-        constructGraphs(ic1, ic2, model)
+        
+        # Prepare tasks for parallel execution
+        tasks = [(x0, y0, model) for x0, y0 in zip(ic1, ic2)]
+        
+        # Run graph construction in parallel (use threads since it's I/O bound)
+        max_workers = min(mp.cpu_count(), len(tasks))
+        print(f"Using {max_workers} parallel workers for {len(tasks)} graph constructions")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(self._construct_single_ic_graphs, task): task 
+                            for task in tasks}
+            
+            completed = 0
+            success_count = 0
+            for future in as_completed(future_to_task):
+                x0, y0, success = future.result()
+                if success:
+                    success_count += 1
+                
+                completed += 1
+                if completed % 5 == 0 or completed == len(tasks):
+                    print(f"Progress: {completed}/{len(tasks)} graph constructions completed ({success_count} successful)")
         
         # Calculate advanced graph metrics if enabled
         if self.config.get('execution_mode', {}).get('calculate_advanced_metrics', True):
@@ -310,12 +376,25 @@ class SystemAnalyzer:
         
         print(f"✓ {model.upper()} visibility graphs completed")
     
+    def _calculate_single_graph_metrics(self, args):
+        """Calculate metrics for a single graph file (for parallel execution)."""
+        graph_path, metrics_file = args
+        
+        try:
+            cmd = f"./graph_metrics {graph_path} {metrics_file}"
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            return (graph_path, True)
+        except subprocess.CalledProcessError as e:
+            return (graph_path, False)
+    
     def _calculate_advanced_graph_metrics(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
-        """Calculate advanced graph metrics using C++ utilities."""
-        print(f"📈 Calculating advanced graph metrics for {model.upper()}...")
+        """Calculate advanced graph metrics using C++ utilities in parallel."""
+        print(f"📈 Calculating advanced graph metrics for {model.upper()} in parallel...")
         
         ic1, ic2 = initial_conditions
         
+        # Collect all graph files that need metrics calculation
+        tasks = []
         for ic1_val, ic2_val in zip(ic1, ic2):
             ic_dir = f"data/{model}/{ic1_val}_{ic2_val}"
             if not os.path.exists(ic_dir):
@@ -328,13 +407,32 @@ class SystemAnalyzer:
             for graph_file in graph_files:
                 graph_path = os.path.join(ic_dir, graph_file)
                 metrics_file = graph_path.replace('.csv', '_metrics.csv')
+                tasks.append((graph_path, metrics_file))
+        
+        if not tasks:
+            print("No graph files found for metrics calculation")
+            return
+        
+        # Run metrics calculation in parallel
+        max_workers = min(mp.cpu_count(), len(tasks))
+        print(f"Using {max_workers} parallel workers for {len(tasks)} metrics calculations")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(self._calculate_single_graph_metrics, task): task 
+                            for task in tasks}
+            
+            completed = 0
+            success_count = 0
+            for future in as_completed(future_to_task):
+                graph_path, success = future.result()
+                if success:
+                    success_count += 1
+                else:
+                    print(f"⚠️  Warning: Failed to calculate metrics for {os.path.basename(graph_path)}")
                 
-                try:
-                    cmd = f"./graph_metrics {graph_path} {metrics_file}"
-                    subprocess.run(cmd, shell=True, check=True, capture_output=True)
-                except subprocess.CalledProcessError as e:
-                    print(f"⚠️  Warning: Failed to calculate metrics for {graph_file}")
-                    continue
+                completed += 1
+                if completed % 10 == 0 or completed == len(tasks):
+                    print(f"Progress: {completed}/{len(tasks)} metrics calculations completed ({success_count} successful)")
         
         print(f"✓ {model.upper()} advanced graph metrics completed")
     

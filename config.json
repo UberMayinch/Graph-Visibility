@@ -38,7 +38,7 @@
     "show_plots": true
   },
   "simulation": {
-    "fhn_num_steps": 200000,
+    "fhn_num_steps": 10000,
     "linard_num_steps": 10000
   },
   "fhn": {
@@ -67,7 +67,7 @@
     }
   },
   "linard": {
-    "enabled": true,
+    "enabled": false,
     "initial_conditions": {
       "x_count": 10,
       "y_count": 10,

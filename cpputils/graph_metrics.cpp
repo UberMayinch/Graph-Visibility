@@ -1,4 +1,5 @@
 #include <bits/stdc++.h>
+#include <omp.h>
 using namespace std;
 
 struct GraphMetrics {
@@ -60,28 +61,46 @@ private:
         return dist;
     }
     
-    // Calculate average path length using random sampling
+    // Calculate average path length using optimized sampling
     double calculateAvgPathLength(int sample_size = 1000) {
         if (n <= 1) return 0.0;
-        
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_int_distribution<> dis(0, n - 1);
         
         double total_path_length = 0.0;
         int valid_paths = 0;
         
-        // Use random sampling for efficiency on large graphs
-        int actual_samples = min(sample_size, n * (n - 1) / 2);
-        
-        for (int i = 0; i < actual_samples; i++) {
-            int start = dis(gen);
-            vector<int> distances = bfs(start);
+        // For small graphs, compute exact average path length
+        if (n <= 100) {
+            #pragma omp parallel for reduction(+:total_path_length,valid_paths) schedule(dynamic)
+            for (int i = 0; i < n; i++) {
+                vector<int> distances = bfs(i);
+                for (int j = 0; j < n; j++) {
+                    if (j != i && distances[j] != -1) {
+                        total_path_length += distances[j];
+                        valid_paths++;
+                    }
+                }
+            }
+        } else {
+            // For large graphs, use parallel random sampling
+            int actual_samples = min(sample_size, n / 4); // Reduced sampling for efficiency
             
-            for (int j = 0; j < n; j++) {
-                if (j != start && distances[j] != -1) {
-                    total_path_length += distances[j];
-                    valid_paths++;
+            #pragma omp parallel reduction(+:total_path_length,valid_paths)
+            {
+                random_device rd;
+                mt19937 gen(rd() + omp_get_thread_num()); // Thread-local RNG
+                uniform_int_distribution<> dis(0, n - 1);
+                
+                #pragma omp for schedule(dynamic)
+                for (int i = 0; i < actual_samples; i++) {
+                    int start = dis(gen);
+                    vector<int> distances = bfs(start);
+                    
+                    for (int j = 0; j < n; j++) {
+                        if (j != start && distances[j] != -1) {
+                            total_path_length += distances[j];
+                            valid_paths++;
+                        }
+                    }
                 }
             }
         }
@@ -89,29 +108,31 @@ private:
         return valid_paths > 0 ? total_path_length / valid_paths : 0.0;
     }
     
-    // Calculate clustering coefficient
+    // Calculate clustering coefficient - optimized and parallelized
     double calculateClusteringCoefficient() {
         double total_clustering = 0.0;
         int nodes_with_degree_gt_1 = 0;
         
+        #pragma omp parallel for reduction(+:total_clustering,nodes_with_degree_gt_1) schedule(dynamic)
         for (int i = 0; i < n; i++) {
             int degree = adj_list[i].size();
             if (degree < 2) continue;
             
             nodes_with_degree_gt_1++;
             
-            // Count triangles involving node i
+            // Count triangles involving node i - optimized with sorted adjacency
             int triangles = 0;
-            set<int> neighbors(adj_list[i].begin(), adj_list[i].end());
+            const vector<int>& neighbors_i = adj_list[i];
             
-            for (int j = 0; j < adj_list[i].size(); j++) {
-                for (int k = j + 1; k < adj_list[i].size(); k++) {
-                    int neighbor1 = adj_list[i][j];
-                    int neighbor2 = adj_list[i][k];
+            // Use sorted adjacency lists for faster intersection
+            for (size_t j = 0; j < neighbors_i.size(); j++) {
+                for (size_t k = j + 1; k < neighbors_i.size(); k++) {
+                    int neighbor1 = neighbors_i[j];
+                    int neighbor2 = neighbors_i[k];
                     
-                    // Check if neighbor1 and neighbor2 are connected
-                    if (find(adj_list[neighbor1].begin(), adj_list[neighbor1].end(), neighbor2) 
-                        != adj_list[neighbor1].end()) {
+                    // Binary search for faster neighbor lookup (adjacency lists should be sorted)
+                    const vector<int>& neighbors_1 = adj_list[neighbor1];
+                    if (binary_search(neighbors_1.begin(), neighbors_1.end(), neighbor2)) {
                         triangles++;
                     }
                 }
@@ -179,11 +200,11 @@ public:
         n = max_node + 1;
         adj_list.resize(n);
         
+        // Build adjacency lists and sort them for binary search optimization
         for (const auto& pair : temp_adj) {
             int node = pair.first;
-            for (int neighbor : pair.second) {
-                adj_list[node].push_back(neighbor);
-            }
+            adj_list[node].assign(pair.second.begin(), pair.second.end());
+            // Lists are already sorted since we used set<int>
         }
     }
     

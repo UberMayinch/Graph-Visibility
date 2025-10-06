@@ -1,20 +1,30 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 def bifurcationdiagram(timeseries_dataframes, col="u", model="fhn", initial_conds="./"):
+    """Optimized bifurcation diagram generation with vectorized operations."""
     all_peak_data = []
     stats_data = []
     
+    # Pre-allocate lists for better memory efficiency
+    a_values = []
+    peak_values_list = []
+    
     for a, df in timeseries_dataframes.items():
-        # Extract local optima for this 'a'
-        peak_values = df[col][df["is_local_opt"]]
-        for val in peak_values:
-            all_peak_data.append({'A': a, 'u_peak': val})
+        # Extract local optima for this 'a' - vectorized operation
+        is_local_opt = df["is_local_opt"].values
+        col_values = df[col].values
+        peak_values = col_values[is_local_opt]
         
-        # Calculate statistics for this 'a'
         if len(peak_values) > 0:
-            mean_val = peak_values.mean()
-            std_val = peak_values.std()
+            # Use NumPy for vectorized operations
+            a_array = np.full(len(peak_values), a)
+            all_peak_data.extend(list(zip(a_array, peak_values)))
+            
+            # Calculate statistics using NumPy for better performance
+            mean_val = np.mean(peak_values)
+            std_val = np.std(peak_values, ddof=1) if len(peak_values) > 1 else 0.0
             stats_data.append({
                 'A': a, 
                 'mean': mean_val, 
@@ -22,8 +32,12 @@ def bifurcationdiagram(timeseries_dataframes, col="u", model="fhn", initial_cond
                 'upper_4std': mean_val + 4 * std_val,
             })
 
-    # Convert to DataFrames
-    peak_df = pd.DataFrame(all_peak_data)
+    # Convert to DataFrames more efficiently
+    if all_peak_data:
+        peak_df = pd.DataFrame(all_peak_data, columns=['A', 'u_peak'])
+    else:
+        peak_df = pd.DataFrame(columns=['A', 'u_peak'])
+    
     stats_df = pd.DataFrame(stats_data)
 
     # Plot
@@ -49,7 +63,8 @@ def bifurcationdiagram(timeseries_dataframes, col="u", model="fhn", initial_cond
     plt.savefig(f'plots/{model}/{initial_conds}/bifurcation.png')
     plt.close()
 
-    return all_peak_data 
+    # Return the DataFrame instead of raw data for consistency with bifurcation_smoothed
+    return peak_df 
 
 
 def bifurcation_smoothed(peak_data, model="fhn"):
@@ -60,20 +75,39 @@ def bifurcation_smoothed(peak_data, model="fhn"):
     3. Shaded regions showing statistics across all realizations
     """
     
-    # Select the first realization for detailed plotting
+        # Select the first realization for detailed plotting
     first_key = list(peak_data.keys())[0]
     selected_realization = peak_data[first_key]
     
-    # Convert selected realization data to DataFrame for easier handling
-    selected_df = pd.DataFrame(selected_realization)
+    # Convert selected realization to DataFrame - handle both old and new formats
+    if isinstance(selected_realization, pd.DataFrame):
+        selected_df = selected_realization
+    elif isinstance(selected_realization, list) and selected_realization:
+        # Handle old format: list of tuples (a, peak_value)
+        selected_df = pd.DataFrame(selected_realization, columns=['A', 'u_peak'])
+    else:
+        # Fallback: create empty DataFrame with expected columns
+        selected_df = pd.DataFrame(columns=['A', 'u_peak'])
     
-    # Collect statistics from all realizations
     all_stats = []
     all_a_values = set()
     
     for (u0, v0), realization_data in peak_data.items():
-        realization_df = pd.DataFrame(realization_data)
+        # Handle both DataFrame and list formats
+        if isinstance(realization_data, pd.DataFrame):
+            realization_df = realization_data
+        elif isinstance(realization_data, list) and realization_data:
+            # Convert list of tuples to DataFrame
+            realization_df = pd.DataFrame(realization_data, columns=['A', 'u_peak'])
+        else:
+            # Skip empty or invalid data
+            continue
         
+        # Check if DataFrame has the expected columns
+        if 'A' not in realization_df.columns or 'u_peak' not in realization_df.columns:
+            print(f"Warning: Skipping realization {(u0, v0)} - missing expected columns")
+            continue
+            
         # Group by parameter value A and calculate statistics
         for a in realization_df['A'].unique():
             peaks = realization_df[realization_df['A'] == a]['u_peak']
@@ -82,11 +116,11 @@ def bifurcation_smoothed(peak_data, model="fhn"):
                 std_val = peaks.std()
                 all_stats.append({
                     'A': a,
-                    'u0': u0,
-                    'v0': v0, 
                     'mean': mean_val,
                     'std': std_val,
-                    'upper_4std': mean_val + 4 * std_val
+                    'upper_4std': mean_val + 4 * std_val,
+                    'u0': u0,
+                    'v0': v0
                 })
                 all_a_values.add(a)
     

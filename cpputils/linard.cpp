@@ -57,19 +57,68 @@ int main(int argc, char** argv){
     }
 
 
-    ofstream outfile(output_directory + "/" + string(argv[2]) + "_" + string(argv[3]) + "/output_" + string(argv[1]) + ".csv");
-    outfile << "time,x,y" << endl;  
-    double t = 0.0;
-    double h = 0.01;  
+    string filename = output_directory + "/" + string(argv[2]) + "_" + string(argv[3]) + "/output_" + string(argv[1]) + ".csv";
     
+    // Pre-allocate output buffer for better I/O performance
+    vector<string> output_buffer;
+    output_buffer.reserve(num_steps + 1);
+    output_buffer.push_back("time,x,y");
+    
+    double t = 0.0;
+    const double h = 0.01;  
+    
+    // Extract frequently used parameters to avoid map lookups
+    const double alpha = params["alpha"];
+    const double beta = params["beta"];
+    const double gamma = params["gamma"];
+    const double f = params["f"];
+    const double omega = params["omega"];
+    
+    // Optimized integration loop
     for(int i = 0; i < num_steps; i++){
-        outfile << t << "," << x0 << "," << y0 << endl;
-        auto result = adv(x0, y0, t, params, h);
-        x0 = result.first;
-        y0 = result.second;
+        // Direct calculation without function calls for better performance
+        const double dx_dt = y0;
+        const double dy_dt = -alpha * x0 * y0 - beta * x0 * x0 * x0 - gamma * x0 + f * sin(omega * t);
+        
+        // RK4 integration - optimized
+        const double k1x = dx_dt;
+        const double k1y = dy_dt;
+        
+        const double x_mid1 = x0 + k1x * h * 0.5;
+        const double y_mid1 = y0 + k1y * h * 0.5;
+        const double t_mid = t + h * 0.5;
+        
+        const double k2x = y_mid1;
+        const double k2y = -alpha * x_mid1 * y_mid1 - beta * x_mid1 * x_mid1 * x_mid1 - gamma * x_mid1 + f * sin(omega * t_mid);
+        
+        const double x_mid2 = x0 + k2x * h * 0.5;
+        const double y_mid2 = y0 + k2y * h * 0.5;
+        
+        const double k3x = y_mid2;
+        const double k3y = -alpha * x_mid2 * y_mid2 - beta * x_mid2 * x_mid2 * x_mid2 - gamma * x_mid2 + f * sin(omega * t_mid);
+        
+        const double x_end = x0 + k3x * h;
+        const double y_end = y0 + k3y * h;
+        const double t_end = t + h;
+        
+        const double k4x = y_end;
+        const double k4y = -alpha * x_end * y_end - beta * x_end * x_end * x_end - gamma * x_end + f * sin(omega * t_end);
+        
+        x0 += h * (k1x + 2*k2x + 2*k3x + k4x) / 6.0;
+        y0 += h * (k1y + 2*k2y + 2*k3y + k4y) / 6.0;
         t += h;
+        
+        // Buffer output instead of writing immediately
+        output_buffer.push_back(to_string(t) + "," + to_string(x0) + "," + to_string(y0));
     }
     
+    // Write all output at once for better I/O performance
+    ofstream outfile(filename);
+    for (const string& line : output_buffer) {
+        outfile << line << '\n';
+    }
     outfile.close();
+    
+    return 0;
 
 }

@@ -1,9 +1,15 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O2 -Wall
+# Aggressive optimization flags for maximum performance (GCC compatible)
+CXXFLAGS = -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra \
+           -fopenmp -ffast-math -flto -funroll-loops \
+           -finline-functions -ftree-vectorize -fomit-frame-pointer \
+           -DNDEBUG
+LDFLAGS = -fopenmp -flto
 
-# Find all .cpp files in cpputils directory and create corresponding targets
-CPP_SOURCES = $(wildcard cpputils/*.cpp)
-CPP_TARGETS = $(patsubst cpputils/%.cpp,%,$(CPP_SOURCES))
+# Only compile the essential C++ files used in the analysis pipeline
+ESSENTIAL_SOURCES = cpputils/fhn.cpp cpputils/linard.cpp cpputils/weighted_construct.cpp \
+                   cpputils/unweighted_construct.cpp cpputils/graph_metrics.cpp
+CPP_TARGETS = $(patsubst cpputils/%.cpp,%,$(ESSENTIAL_SOURCES))
 TARGETS = $(CPP_TARGETS)
 
 # Default target - build all executables
@@ -11,7 +17,7 @@ all: $(TARGETS)
 
 # Rule to compile each .cpp file from cpputils to executable in root directory
 %: cpputils/%.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
 # Clean target
 clean:
