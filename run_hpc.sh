@@ -2,12 +2,13 @@
 #SBATCH --job-name=graph-visibility
 #SBATCH --output=logs/analysis_%j.out
 #SBATCH --error=logs/analysis_%j.err
-#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --partition=compute
+#SBATCH --cpus-per-task=16
+#SBATCH --mem-per-cpu=2048
+#SBATCH --time=72:00:00
+#SBATCH --mail-user=chinmay.sharma@research.iiit.ac.in
+#SBATCH --mail-type=ALL
 
 # HPC Batch Script for Optimized Graph Visibility Analysis
 # Usage: sbatch run_hpc.sh [config_file] [model] [additional_args]
@@ -48,8 +49,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # Load required modules (adjust based on your HPC environment)
-# module load gcc/11.2.0
-# module load python/3.9.0
+module load u22/cmake/4.0.1 
+module load u22/python/3.12.4 
 
 # Set up UV environment (no modules loaded)
 echo "Setting up UV package manager..."
@@ -65,7 +66,7 @@ fi
 
 # Create and activate virtual environment with UV
 echo "Creating Python virtual environment..."
-uv venv --python 3.9 .venv
+uv venv --python 3.12 .venv
 if [[ ! -f ".venv/bin/activate" ]]; then
     echo "❌ Error: Virtual environment creation failed!"
     exit 1
@@ -76,7 +77,7 @@ echo "✓ Activated virtual environment"
 
 # Install dependencies with no cache to save space
 echo "Installing Python dependencies..."
-uv pip install --no-cache-dir -e .
+uv pip install --no-cache-dir -r requirements.txt
 if [[ $? -ne 0 ]]; then
     echo "❌ Error: Dependency installation failed!"
     exit 1

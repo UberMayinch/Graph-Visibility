@@ -39,8 +39,8 @@
       "v_range": 0.0001
     },
     "parameters": {
-      "A_min": 0.60,
-      "A_max": 0.65,
+      "A_min": 0.62,
+      "A_max": 0.63,
       "column_u": "u",
       "column_v": "v"
     },
