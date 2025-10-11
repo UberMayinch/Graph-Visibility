@@ -1,16 +1,18 @@
 {
   "general": {
     "random_seed": 42,
-    "stabilizing_time": 40000,
+    "stabilizing_time": 2000,
     "window_size": 1,
     "precision_degree": 6,
-    "num_params": 101
+    "num_params": 21
   },
   "execution_mode": {
     "run_until_graphs": false,
     "load_existing_graphs": false,
     "skip_simulations": false,
-    "calculate_advanced_metrics": true
+  "calculate_advanced_metrics": true,
+  "zip_and_prune_enabled": false,
+  "metrics_workers": 0 
   },
   "plot_options": {
     "enabled_metrics": [
@@ -38,7 +40,7 @@
     "show_plots": true
   },
   "simulation": {
-    "fhn_num_steps": 10000,
+    "fhn_num_steps": 5000,
     "linard_num_steps": 10000
   },
   "fhn": {
@@ -94,7 +96,7 @@
     "plots_dir": "plots"
   },
   "output_files": {
-    "weighted_degree_stats": "weighted_degree_stats.csv",
-    "unweighted_degree_stats": "unweighted_degree_stats.csv"
+    "weighted_degree_stats": "weighted_degree_stats.bin",
+    "unweighted_degree_stats": "unweighted_degree_stats.bin"
   }
 }

@@ -35,6 +35,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import networkx as nx
 import random
+import zipfile
+from glob import glob
+import struct
 
 # Add pyutils to path for imports
 sys.path.insert(0, 'pyutils')
@@ -167,7 +170,7 @@ class SystemAnalyzer:
             raise ValueError(f"Unknown model: {model}")
     
     def _run_single_simulation(self, args):
-        """Run a single simulation (for parallel execution)."""
+        """Run a single simulation (sequential wrapper)."""
         model, param, ic1_val, ic2_val, num_steps = args
         
         # Create directory for this initial condition
@@ -178,48 +181,39 @@ class SystemAnalyzer:
         cmd = f"./{model} {param} {ic1_val} {ic2_val} {num_steps}"
         try:
             subprocess.run(cmd, shell=True, check=True, capture_output=True)
-            return (ic1_val, ic2_val, param, f"data/{model}/{ic1_val}_{ic2_val}/output_{param}.csv")
+            return (ic1_val, ic2_val, param, f"data/{model}/{ic1_val}_{ic2_val}/output_{param}.bin")
         except subprocess.CalledProcessError as e:
             print(f"⚠️  Warning: Simulation failed for {model} with params {param}, {ic1_val}, {ic2_val}")
             return None
     
     def run_simulations(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray], 
                        parameters: np.ndarray) -> Dict[Tuple[float, float], Dict[float, str]]:
-        """Run simulations for all parameter values and initial conditions in parallel."""
+        """Run simulations sequentially for all parameter values and initial conditions."""
         ic1, ic2 = initial_conditions
-        csv_paths = defaultdict(dict)
+        csv_paths: Dict[Tuple[float, float], Dict[float, str]] = defaultdict(dict)
         
-        print(f"🚀 Running {model.upper()} simulations in parallel...")
+        print(f"🚀 Running {model.upper()} simulations sequentially...")
         
         # Get number of steps from configuration
         num_steps = self.config['simulation'][f'{model}_num_steps']
         
         # Prepare all simulation tasks
-        simulation_tasks = []
+        simulation_tasks: List[Tuple[str, float, float, float, int]] = []
         for ic1_val, ic2_val in zip(ic1, ic2):
             for param in parameters:
-                simulation_tasks.append((model, param, ic1_val, ic2_val, num_steps))
+                simulation_tasks.append((model, float(param), float(ic1_val), float(ic2_val), int(num_steps)))
         
-        # Run simulations in parallel
-        max_workers = min(mp.cpu_count(), len(simulation_tasks))
-        print(f"Using {max_workers} parallel workers for {len(simulation_tasks)} simulations")
-        
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_task = {executor.submit(self._run_single_simulation, task): task 
-                            for task in simulation_tasks}
-            
-            # Collect results
-            completed = 0
-            for future in as_completed(future_to_task):
-                result = future.result()
-                if result is not None:
-                    ic1_val, ic2_val, param, path = result
-                    csv_paths[(ic1_val, ic2_val)][param] = path
-                
-                completed += 1
-                if completed % 10 == 0 or completed == len(simulation_tasks):
-                    print(f"Progress: {completed}/{len(simulation_tasks)} simulations completed")
+        # Run simulations sequentially
+        completed = 0
+        total = len(simulation_tasks)
+        for task in simulation_tasks:
+            result = self._run_single_simulation(task)
+            if result is not None:
+                ic1_val, ic2_val, param, path = result
+                csv_paths[(ic1_val, ic2_val)][param] = path
+            completed += 1
+            if completed % 10 == 0 or completed == total:
+                print(f"Progress: {completed}/{total} simulations completed")
         
         print(f"✓ {model.upper()} simulations completed")
         return csv_paths
@@ -339,40 +333,42 @@ class SystemAnalyzer:
             return (x0, y0, False)
     
     def construct_visibility_graphs(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
-        """Construct visibility graphs in parallel."""
+        """Construct visibility graphs sequentially per IC and finalize per folder.
+
+        For each initial condition (IC) folder:
+          - construct weighted/unweighted graphs (sequential)
+          - compute metrics for graphs within that folder (parallel threads)
+          - optionally zip & prune that folder if enabled in config
+        """
         if not self.config[model]['analysis']['construct_graphs']:
             print(f"⏭️  Skipping graph construction for {model.upper()}")
             return
         
-        print(f"🕸️  Constructing {model.upper()} visibility graphs in parallel...")
+        print(f"🔧 Constructing {model.upper()} visibility graphs sequentially...")
         
         ic1, ic2 = initial_conditions
         
-        # Prepare tasks for parallel execution
-        tasks = [(x0, y0, model) for x0, y0 in zip(ic1, ic2)]
-        
-        # Run graph construction in parallel (use threads since it's I/O bound)
-        max_workers = min(mp.cpu_count(), len(tasks))
-        print(f"Using {max_workers} parallel workers for {len(tasks)} graph constructions")
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_task = {executor.submit(self._construct_single_ic_graphs, task): task 
-                            for task in tasks}
-            
-            completed = 0
-            success_count = 0
-            for future in as_completed(future_to_task):
-                x0, y0, success = future.result()
-                if success:
-                    success_count += 1
-                
+        # Process per IC: construct -> metrics (per folder) -> optional zip/prune
+        tasks: List[Tuple[float, float, str]] = [(float(x0), float(y0), model) for x0, y0 in zip(ic1, ic2)]
+        completed = 0
+        total = len(tasks)
+        for task in tasks:
+            x0, y0, _ = task
+            # 1) Construct graphs for this IC
+            _, _, success = self._construct_single_ic_graphs(task)
+            if not success:
+                print(f"⚠️  Warning: Graph construction failed for {model} IC ({x0}, {y0})")
                 completed += 1
-                if completed % 5 == 0 or completed == len(tasks):
-                    print(f"Progress: {completed}/{len(tasks)} graph constructions completed ({success_count} successful)")
-        
-        # Calculate advanced graph metrics if enabled
-        if self.config.get('execution_mode', {}).get('calculate_advanced_metrics', True):
-            self._calculate_advanced_graph_metrics(model, initial_conditions)
+                continue
+            # 2) Compute metrics per-folder if not skipped
+            if self.config.get('execution_mode', {}).get('calculate_advanced_metrics', True) \
+               and os.getenv('GV_SKIP_METRICS', '0') != '1':
+                self._calculate_graph_metrics_for_ic(model, x0, y0, workers=self._get_metrics_workers())
+            # 3) Optionally zip & prune this IC folder
+            self._zip_and_prune_single_ic(model, x0, y0)
+            completed += 1
+            if completed % 5 == 0 or completed == total:
+                print(f"Progress: {completed}/{total} ICs finalized")
         
         print(f"✓ {model.upper()} visibility graphs completed")
     
@@ -388,8 +384,26 @@ class SystemAnalyzer:
             return (graph_path, False)
     
     def _calculate_advanced_graph_metrics(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
-        """Calculate advanced graph metrics using C++ utilities in parallel."""
-        print(f"📈 Calculating advanced graph metrics for {model.upper()} in parallel...")
+        """Calculate advanced graph metrics using C++ utilities in parallel (per-file)."""
+        # Determine concurrency: env METRICS_JOBS > SLURM_CPUS_PER_TASK > config > cpu_count
+        env_jobs = os.getenv('METRICS_JOBS')
+        slurm_cpus = os.getenv('SLURM_CPUS_PER_TASK')
+        cfg_jobs = self.config.get('execution_mode', {}).get('metrics_workers')
+        try:
+            workers = int(env_jobs) if env_jobs and int(env_jobs) > 0 else None
+        except Exception:
+            workers = None
+        if workers is None:
+            try:
+                workers = int(slurm_cpus) if slurm_cpus and int(slurm_cpus) > 0 else None
+            except Exception:
+                workers = None
+        if workers is None and isinstance(cfg_jobs, int) and cfg_jobs > 0:
+            workers = cfg_jobs
+        if workers is None:
+            workers = max(1, (os.cpu_count() or 1))
+
+        print(f"📈 Calculating advanced graph metrics for {model.upper()} with {workers} workers...")
         
         ic1, ic2 = initial_conditions
         
@@ -402,39 +416,118 @@ class SystemAnalyzer:
             
             # Find all graph files in the directory (excluding existing metrics files)
             graph_files = [f for f in os.listdir(ic_dir) 
-                          if 'graph' in f and f.endswith('.csv') and not f.endswith('_metrics.csv')]
+                          if 'graph' in f and f.endswith('.bin') and not f.endswith('_metrics.bin')]
             
             for graph_file in graph_files:
                 graph_path = os.path.join(ic_dir, graph_file)
-                metrics_file = graph_path.replace('.csv', '_metrics.csv')
+                metrics_file = graph_path.replace('.bin', '_metrics.bin')
                 tasks.append((graph_path, metrics_file))
         
         if not tasks:
             print("No graph files found for metrics calculation")
             return
         
-        # Run metrics calculation in parallel
-        max_workers = min(mp.cpu_count(), len(tasks))
-        print(f"Using {max_workers} parallel workers for {len(tasks)} metrics calculations")
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_task = {executor.submit(self._calculate_single_graph_metrics, task): task 
-                            for task in tasks}
-            
-            completed = 0
-            success_count = 0
-            for future in as_completed(future_to_task):
-                graph_path, success = future.result()
+        # Run metrics calculation in parallel (thread pool; subprocess calls are I/O bound)
+        completed = 0
+        success_count = 0
+        total = len(tasks)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        # Ensure C++ stays single-threaded to avoid oversubscription
+        os.environ.setdefault('OMP_NUM_THREADS', '1')
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(self._calculate_single_graph_metrics, t): t for t in tasks}
+            for fut in as_completed(futures):
+                try:
+                    graph_path, success = fut.result()
+                except Exception as e:
+                    # Unexpected error in worker
+                    t = futures[fut]
+                    graph_path = t[0]
+                    success = False
                 if success:
                     success_count += 1
                 else:
                     print(f"⚠️  Warning: Failed to calculate metrics for {os.path.basename(graph_path)}")
-                
                 completed += 1
-                if completed % 10 == 0 or completed == len(tasks):
-                    print(f"Progress: {completed}/{len(tasks)} metrics calculations completed ({success_count} successful)")
+                if completed % max(1, total // 10) == 0 or completed == total:
+                    print(f"Progress: {completed}/{total} metrics calculations completed ({success_count} successful)")
         
         print(f"✓ {model.upper()} advanced graph metrics completed")
+
+    def _get_metrics_workers(self) -> int:
+        """Resolve worker count for metrics parallelism from env/Slurm/config."""
+        env_jobs = os.getenv('METRICS_JOBS')
+        slurm_cpus = os.getenv('SLURM_CPUS_PER_TASK')
+        cfg_jobs = self.config.get('execution_mode', {}).get('metrics_workers')
+        workers = None
+        try:
+            workers = int(env_jobs) if env_jobs and int(env_jobs) > 0 else None
+        except Exception:
+            workers = None
+        if workers is None:
+            try:
+                workers = int(slurm_cpus) if slurm_cpus and int(slurm_cpus) > 0 else None
+            except Exception:
+                workers = None
+        if workers is None and isinstance(cfg_jobs, int) and cfg_jobs > 0:
+            workers = cfg_jobs
+        if workers is None:
+            workers = max(1, (os.cpu_count() or 1))
+        return workers
+
+    def _calculate_graph_metrics_for_ic(self, model: str, ic1_val: float, ic2_val: float, workers: Optional[int] = None):
+        """Calculate metrics for all graphs within a single IC folder in parallel."""
+        ic_dir = f"data/{model}/{ic1_val}_{ic2_val}"
+        if not os.path.isdir(ic_dir):
+            return
+        graph_files = [f for f in os.listdir(ic_dir)
+                       if 'graph' in f and f.endswith('.bin') and not f.endswith('_metrics.bin')]
+        if not graph_files:
+            return
+        tasks = []
+        for graph_file in graph_files:
+            graph_path = os.path.join(ic_dir, graph_file)
+            metrics_file = graph_path.replace('.bin', '_metrics.bin')
+            tasks.append((graph_path, metrics_file))
+        if not tasks:
+            return
+        if workers is None:
+            workers = self._get_metrics_workers()
+        os.environ.setdefault('OMP_NUM_THREADS', '1')
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(self._calculate_single_graph_metrics, t) for t in tasks]
+            for _ in as_completed(futures):
+                pass
+
+    def _zip_and_prune_single_ic(self, model: str, ic1_val: float, ic2_val: float):
+        """Zip and prune artifacts for a single IC folder if enabled."""
+        if not self.config.get('execution_mode', {}).get('zip_and_prune_enabled', False):
+            return
+        ic_dir = f"data/{model}/{ic1_val}_{ic2_val}"
+        if not os.path.isdir(ic_dir):
+            return
+        timeseries_files = sorted(glob(os.path.join(ic_dir, 'output_*.bin')))
+        weighted_files = sorted(glob(os.path.join(ic_dir, 'weighted_graph_*.bin')))
+        unweighted_files = sorted(glob(os.path.join(ic_dir, 'unweighted_graph_*.bin')))
+        categories = [
+            (timeseries_files, f"timeseries_{ic1_val}_{ic2_val}.zip"),
+            (weighted_files, f"weighted_graphs_{ic1_val}_{ic2_val}.zip"),
+            (unweighted_files, f"unweighted_graphs_{ic1_val}_{ic2_val}.zip"),
+        ]
+        for files, zipname in categories:
+            if not files:
+                continue
+            zip_path = os.path.join(ic_dir, zipname)
+            with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+                for fp in files:
+                    zf.write(fp, arcname=os.path.basename(fp))
+            for fp in files:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+        print(f"Zipped and pruned IC folder {ic_dir}")
     
     def analyze_degree_distributions(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
         """Analyze weighted and unweighted degree distributions."""
@@ -455,7 +548,7 @@ class SystemAnalyzer:
             print(f"✓ {model.upper()} unweighted degree analysis completed")
     
     def plot_metric_envelope_across_ics(self, model: str, metric_col: str, 
-                                       stats_filename: str = "unweighted_degree_stats.csv",
+                                       stats_filename: str = "unweighted_degree_stats.bin",
                                        param_col: str = None, save: bool = True):
         """
         Plot metric envelopes across initial conditions.
@@ -486,11 +579,19 @@ class SystemAnalyzer:
         records = []
         used_param_col = None
         for ic_path in ic_dirs:
-            csv_path = os.path.join(ic_path, stats_filename)
-            if not os.path.isfile(csv_path):
+            stats_path = os.path.join(ic_path, stats_filename)
+            if not os.path.isfile(stats_path):
                 continue
 
-            df = pd.read_csv(csv_path)
+            # Load STB1 (.bin) or CSV
+            if stats_path.endswith('.bin'):
+                try:
+                    df = self._read_stb1(stats_path)
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to read STB1 table {stats_path}: {e}")
+                    continue
+            else:
+                df = pd.read_csv(stats_path)
             # Infer parameter column
             chosen_param = None
             for cand in candidate_param_cols:
@@ -500,11 +601,11 @@ class SystemAnalyzer:
             if chosen_param is None:
                 numeric_cols = [c for c in df.columns if c != metric_col and pd.api.types.is_numeric_dtype(df[c])]
                 if not numeric_cols:
-                    raise ValueError(f"Could not infer parameter column in {csv_path}")
+                    raise ValueError(f"Could not infer parameter column in {stats_path}")
                 chosen_param = numeric_cols[0]
 
             if metric_col not in df.columns:
-                raise ValueError(f"Metric column '{metric_col}' not found in {csv_path}. Available: {list(df.columns)}")
+                raise ValueError(f"Metric column '{metric_col}' not found in {stats_path}. Available: {list(df.columns)}")
 
             sub = df[[chosen_param, metric_col]].dropna().rename(
                 columns={chosen_param: "param", metric_col: "metric"}
@@ -613,8 +714,13 @@ class SystemAnalyzer:
             # Plot each enabled metric
             for metric in enabled_metrics:
                 try:
-                    # Try weighted first, then unweighted
-                    stats_files = ["weighted_degree_stats.csv", "unweighted_degree_stats.csv"]
+                    # Try weighted first, then unweighted; prefer .bin, fallback to .csv
+                    stats_files = [
+                        "weighted_degree_stats.bin",
+                        "unweighted_degree_stats.bin",
+                        "weighted_degree_stats.csv",
+                        "unweighted_degree_stats.csv",
+                    ]
                     plotted = False
                     
                     for stats_file in stats_files:
@@ -639,6 +745,24 @@ class SystemAnalyzer:
             print(f"✓ {model.upper()} metric plotting completed")
         except Exception as e:
             print(f"⚠️  Warning: Failed to plot metrics for {model}: {e}")
+
+    def _read_stb1(self, path: str) -> pd.DataFrame:
+        """Read an STB1 binary summary table into a pandas DataFrame."""
+        with open(path, 'rb') as f:
+            if f.read(4) != b'STB1':
+                raise ValueError('Invalid STB1 magic')
+            ncols = struct.unpack('<I', f.read(4))[0]
+            cols = []
+            for _ in range(int(ncols)):
+                klen = struct.unpack('<H', f.read(2))[0]
+                cols.append(f.read(int(klen)).decode('ascii'))
+            nrows = struct.unpack('<I', f.read(4))[0]
+            total = int(nrows) * int(ncols)
+            buf = f.read(total * 8)
+            if len(buf) != total * 8:
+                raise ValueError('Unexpected EOF while reading STB1 data matrix')
+            arr = np.frombuffer(buf, dtype='<f8').reshape((int(nrows), int(ncols)))
+        return pd.DataFrame(arr, columns=cols)
     
     def analyze_model(self, model: str):
         """Run complete analysis pipeline for a specific model."""
@@ -689,11 +813,24 @@ class SystemAnalyzer:
             # Stop here if run_until_graphs is True
             if run_until_graphs:
                 print(f"🛑 Stopping after graph generation for {model.upper()} (run_until_graphs=True)")
+                # Zip/prune only if metrics were computed locally and we are stopping here
+                if os.getenv('GV_SKIP_METRICS', '0') != '1':
+                    try:
+                        self._zip_and_prune_ic_data(model, initial_conditions)
+                    except Exception as e:
+                        print(f"⚠️  Warning: Failed to zip/prune artifacts for {model.upper()}: {e}")
                 return
             
             # Continue with post-graph analysis
             self.analyze_degree_distributions(model, initial_conditions)
             self.plot_metrics(model)
+
+        # Now that all local analysis and plotting are done, zip and prune if metrics were computed locally
+        if os.getenv('GV_SKIP_METRICS', '0') != '1':
+            try:
+                self._zip_and_prune_ic_data(model, initial_conditions)
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to zip/prune artifacts for {model.upper()}: {e}")
         
         print(f"✅ {model.upper()} analysis completed!\n")
     
@@ -719,6 +856,44 @@ class SystemAnalyzer:
                 continue
         
         print("🎉 Analysis pipeline completed!")
+
+    def _zip_and_prune_ic_data(self, model: str, initial_conditions: Tuple[np.ndarray, np.ndarray]):
+        """Zip per-IC timeseries, weighted_graphs, unweighted_graphs and delete the originals.
+
+        - Creates three zip files per IC in data/{model}/{ic1}_{ic2}:
+          timeseries_<ic>.zip, weighted_graphs_<ic>.zip, unweighted_graphs_<ic>.zip
+        - Only zips .bin artifacts; leaves metrics and summary tables as-is.
+        """
+        ic1, ic2 = initial_conditions
+        for ic1_val, ic2_val in zip(ic1, ic2):
+            ic_dir = f"data/{model}/{ic1_val}_{ic2_val}"
+            if not os.path.isdir(ic_dir):
+                continue
+            # Gather files by category
+            timeseries_files = sorted(glob(os.path.join(ic_dir, 'output_*.bin')))
+            weighted_files = sorted(glob(os.path.join(ic_dir, 'weighted_graph_*.bin')))
+            unweighted_files = sorted(glob(os.path.join(ic_dir, 'unweighted_graph_*.bin')))
+
+            categories = [
+                (timeseries_files, f"timeseries_{ic1_val}_{ic2_val}.zip"),
+                (weighted_files, f"weighted_graphs_{ic1_val}_{ic2_val}.zip"),
+                (unweighted_files, f"unweighted_graphs_{ic1_val}_{ic2_val}.zip"),
+            ]
+
+            for files, zipname in categories:
+                if not files:
+                    continue
+                zip_path = os.path.join(ic_dir, zipname)
+                with zipfile.ZipFile(zip_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+                    for fp in files:
+                        zf.write(fp, arcname=os.path.basename(fp))
+                # Remove originals after successful zip
+                for fp in files:
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+                print(f"Zipped {len(files)} files to {zip_path} and deleted originals")
 
 
 def main():

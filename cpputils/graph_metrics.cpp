@@ -1,5 +1,6 @@
 #include <bits/stdc++.h>
 #include <omp.h>
+#include <cstdint>
 using namespace std;
 
 struct GraphMetrics {
@@ -70,7 +71,6 @@ private:
         
         // For small graphs, compute exact average path length
         if (n <= 100) {
-            #pragma omp parallel for reduction(+:total_path_length,valid_paths) schedule(dynamic)
             for (int i = 0; i < n; i++) {
                 vector<int> distances = bfs(i);
                 for (int j = 0; j < n; j++) {
@@ -83,23 +83,16 @@ private:
         } else {
             // For large graphs, use parallel random sampling
             int actual_samples = min(sample_size, n / 4); // Reduced sampling for efficiency
-            
-            #pragma omp parallel reduction(+:total_path_length,valid_paths)
-            {
-                random_device rd;
-                mt19937 gen(rd() + omp_get_thread_num()); // Thread-local RNG
-                uniform_int_distribution<> dis(0, n - 1);
-                
-                #pragma omp for schedule(dynamic)
-                for (int i = 0; i < actual_samples; i++) {
-                    int start = dis(gen);
-                    vector<int> distances = bfs(start);
-                    
-                    for (int j = 0; j < n; j++) {
-                        if (j != start && distances[j] != -1) {
-                            total_path_length += distances[j];
-                            valid_paths++;
-                        }
+            random_device rd;
+            mt19937 gen(rd());
+            uniform_int_distribution<> dis(0, n - 1);
+            for (int i = 0; i < actual_samples; i++) {
+                int start = dis(gen);
+                vector<int> distances = bfs(start);
+                for (int j = 0; j < n; j++) {
+                    if (j != start && distances[j] != -1) {
+                        total_path_length += distances[j];
+                        valid_paths++;
                     }
                 }
             }
@@ -113,8 +106,7 @@ private:
         double total_clustering = 0.0;
         int nodes_with_degree_gt_1 = 0;
         
-        #pragma omp parallel for reduction(+:total_clustering,nodes_with_degree_gt_1) schedule(dynamic)
-        for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++) {
             int degree = adj_list[i].size();
             if (degree < 2) continue;
             
@@ -154,44 +146,65 @@ public:
     }
     
     void loadGraph(const string& graph_file) {
-        ifstream file(graph_file);
-        if (!file.is_open()) {
+        // Try binary formats first (UGB1/WGB1)
+        ifstream bfile(graph_file, ios::binary);
+        if (!bfile.is_open()) {
             throw runtime_error("Cannot open graph file: " + graph_file);
         }
-        
-        string line;
-        getline(file, line); // Skip header
         
         map<int, set<int>> temp_adj;
         int max_node = -1;
         
-        while (getline(file, line)) {
-            stringstream ss(line);
-            string node1_str, node2_str, weight_str;
-            
-            if (!getline(ss, node1_str, ',') || 
-                !getline(ss, node2_str, ',')) {
-                continue;
+        char magic[4] = {0};
+        bfile.read(magic, 4);
+        if (bfile && (strncmp(magic, "UGB1", 4) == 0 || strncmp(magic, "WGB1", 4) == 0)) {
+            // Binary graph: read edge_count and edges
+            uint64_t edge_count = 0;
+            bfile.read(reinterpret_cast<char*>(&edge_count), sizeof(edge_count));
+            for (uint64_t i = 0; i < edge_count; ++i) {
+                int32_t u, v;
+                bfile.read(reinterpret_cast<char*>(&u), sizeof(u));
+                bfile.read(reinterpret_cast<char*>(&v), sizeof(v));
+                if (!bfile) break;
+                // If WGB1, skip weight
+                if (strncmp(magic, "WGB1", 4) == 0) {
+                    double w;
+                    bfile.read(reinterpret_cast<char*>(&w), sizeof(w));
+                }
+                temp_adj[u].insert(v);
+                temp_adj[v].insert(u);
+                max_node = max(max_node, max((int)u, (int)v));
             }
-            
-            // Weight column is optional (for unweighted graphs)
-            getline(ss, weight_str);
-            
-            try {
-                int node1 = stoi(node1_str);
-                int node2 = stoi(node2_str);
-                
-                temp_adj[node1].insert(node2);
-                temp_adj[node2].insert(node1);
-                
-                max_node = max(max_node, max(node1, node2));
-            } catch (const exception& e) {
-                cerr << "Error parsing line: " << line << " - " << e.what() << endl;
-                continue;
+            bfile.close();
+        } else {
+            // Fallback to CSV reader
+            bfile.close();
+            ifstream file(graph_file);
+            if (!file.is_open()) {
+                throw runtime_error("Cannot open graph file: " + graph_file);
             }
+            string line;
+            getline(file, line); // Skip header
+            while (getline(file, line)) {
+                stringstream ss(line);
+                string node1_str, node2_str, weight_str;
+                if (!getline(ss, node1_str, ',') || !getline(ss, node2_str, ',')) {
+                    continue;
+                }
+                getline(ss, weight_str);
+                try {
+                    int node1 = stoi(node1_str);
+                    int node2 = stoi(node2_str);
+                    temp_adj[node1].insert(node2);
+                    temp_adj[node2].insert(node1);
+                    max_node = max(max_node, max(node1, node2));
+                } catch (const exception& e) {
+                    cerr << "Error parsing line: " << line << " - " << e.what() << endl;
+                    continue;
+                }
+            }
+            file.close();
         }
-        
-        file.close();
         
         if (max_node == -1) {
             throw runtime_error("No valid edges found in graph file");
@@ -233,35 +246,45 @@ public:
     }
     
     void saveMetrics(const GraphMetrics& metrics, const string& output_file) {
-        ofstream file(output_file);
+        // Save as MET1 binary: magic(4), uint32 item_count, then items: uint16 key_len, key bytes, double value
+        ofstream file(output_file, ios::binary);
         if (!file.is_open()) {
             throw runtime_error("Cannot create output file: " + output_file);
         }
+        const char magic[4] = {'M','E','T','1'};
+        file.write(magic, 4);
         
-        file << "metric,value" << endl;
-        file << "num_nodes," << metrics.num_nodes << endl;
-        file << "num_edges," << metrics.num_edges << endl;
-        file << "density," << metrics.density << endl;
-        file << "degree_entropy," << metrics.entropy << endl;
-        file << "avg_path_length," << metrics.avg_path_length << endl;
-        file << "clustering_coefficient," << metrics.clustering_coefficient << endl;
-        
-        // Degree statistics
+        // Prepare key-value pairs
+        vector<pair<string, double>> items;
+        items.push_back({"num_nodes", (double)metrics.num_nodes});
+        items.push_back({"num_edges", (double)metrics.num_edges});
+        items.push_back({"density", metrics.density});
+        items.push_back({"degree_entropy", metrics.entropy});
+        items.push_back({"avg_path_length", metrics.avg_path_length});
+        items.push_back({"clustering_coefficient", metrics.clustering_coefficient});
         if (!metrics.degree_sequence.empty()) {
             vector<int> degrees = metrics.degree_sequence;
             sort(degrees.begin(), degrees.end());
-            
             double mean_degree = accumulate(degrees.begin(), degrees.end(), 0.0) / degrees.size();
             double median_degree = degrees.size() % 2 == 0 ? 
                 (degrees[degrees.size()/2 - 1] + degrees[degrees.size()/2]) / 2.0 :
                 degrees[degrees.size()/2];
-            
-            file << "mean_degree," << mean_degree << endl;
-            file << "median_degree," << median_degree << endl;
-            file << "min_degree," << degrees[0] << endl;
-            file << "max_degree," << degrees.back() << endl;
+            items.push_back({"mean_degree", mean_degree});
+            items.push_back({"median_degree", median_degree});
+            items.push_back({"min_degree", (double)degrees.front()});
+            items.push_back({"max_degree", (double)degrees.back()});
         }
         
+        uint32_t item_count = static_cast<uint32_t>(items.size());
+        file.write(reinterpret_cast<const char*>(&item_count), sizeof(item_count));
+        for (const auto& kv : items) {
+            const string& key = kv.first;
+            double value = kv.second;
+            uint16_t key_len = static_cast<uint16_t>(key.size());
+            file.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
+            file.write(key.data(), key.size());
+            file.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        }
         file.close();
     }
 };
@@ -292,8 +315,8 @@ int main(int argc, char** argv) {
         cout << "  Avg Path Length: " << metrics.avg_path_length << endl;
         cout << "  Clustering Coefficient: " << metrics.clustering_coefficient << endl;
         
-        analyzer.saveMetrics(metrics, output_file);
-        cout << "Metrics saved to: " << output_file << endl;
+    analyzer.saveMetrics(metrics, output_file);
+    cout << "Metrics saved to: " << output_file << endl;
         
     } catch (const exception& e) {
         cerr << "Error: " << e.what() << endl;

@@ -1,6 +1,7 @@
 #include <bits/stdc++.h>
 #include <omp.h>
 #include <chrono>
+#include <cstdint>
 using namespace std;
 using namespace std::chrono;
 
@@ -74,12 +75,12 @@ int main(int argc __attribute__((unused)), char** argv)
     string data_dir = string(argv[1]);
     vector<string> files;
     
-    // Get all output*.csv files
+    // Get all output*.bin files
     files.reserve(1000); // Pre-allocate to avoid reallocations
     for (const auto& entry : filesystem::directory_iterator(data_dir)) {
         const string& filename = entry.path().filename().string();
         if (filename.size() >= 10 && filename.substr(0, 6) == "output" && 
-            filename.substr(filename.length() - 4) == ".csv") {
+            filename.substr(filename.length() - 4) == ".bin") {
             files.push_back(entry.path().string());
         }
     }
@@ -95,41 +96,32 @@ int main(int argc __attribute__((unused)), char** argv)
     for (size_t file_idx = 0; file_idx < files.size(); ++file_idx) {
         const string& file = files[file_idx];
         
-        // Fast CSV reading with memory optimization
-        ifstream infile(file);
+        // Read TSB1 binary: magic(4), uint32 cols, uint32 rows, then rows of 3 x float64
+        ifstream infile(file, ios::binary);
         if (!infile) continue;
         
+        char magic[4];
+        infile.read(magic, 4);
+        if (strncmp(magic, "TSB1", 4) != 0) { infile.close(); continue; }
+        uint32_t cols = 0, rows = 0;
+        infile.read(reinterpret_cast<char*>(&cols), sizeof(cols));
+        infile.read(reinterpret_cast<char*>(&rows), sizeof(rows));
+        if (cols < 3) { infile.close(); continue; }
+        
         vector<double> y;
-        y.reserve(200000); // Reduced size to prevent memory explosion
+        y.reserve(min<size_t>(rows, 200000));
+        const size_t MAX_SERIES_SIZE = 200000;
         
-        // Memory safety check
-        const size_t MAX_SERIES_SIZE = 200000;  // Limit time series size
-        
-        string line;
-        line.reserve(64); // Reserve space for line string
-        
-        // Skip header if present
-        getline(infile, line);
-        
-        // Parse CSV: time,u,v - use v column (third column)
-        while (getline(infile, line)) {
-            size_t first_comma = line.find(',');
-            if (first_comma == string::npos) continue;
-            
-            size_t second_comma = line.find(',', first_comma + 1);
-            if (second_comma == string::npos) continue;
-            
-            // Use the v column (third column) - faster parsing
-            const char* v_start = line.c_str() + second_comma + 1;
-            char* endptr;
-            double v_val = strtod(v_start, &endptr);
-            if (endptr != v_start) {
-                y.push_back(v_val);
-                // Memory safety: prevent excessive memory usage
-                if (y.size() >= MAX_SERIES_SIZE) {
-                    cout << "Warning: Truncating time series at " << MAX_SERIES_SIZE << " points for memory safety" << endl;
-                    break;
-                }
+        for (uint32_t i = 0; i < rows; ++i) {
+            double t_val, u_val, v_val;
+            infile.read(reinterpret_cast<char*>(&t_val), sizeof(t_val));
+            infile.read(reinterpret_cast<char*>(&u_val), sizeof(u_val));
+            infile.read(reinterpret_cast<char*>(&v_val), sizeof(v_val));
+            if (!infile) break;
+            y.push_back(v_val);
+            if (y.size() >= MAX_SERIES_SIZE) {
+                cout << "Warning: Truncating time series at " << MAX_SERIES_SIZE << " points for memory safety" << endl;
+                break;
             }
         }
         infile.close();
@@ -141,19 +133,33 @@ int main(int argc __attribute__((unused)), char** argv)
         vector<vector<pair<int, double>>> graph(n);
         WeightedVisibilityGraphDQ(y, 0, n-1, graph);
 
-        // Write visibility graph to file - optimized I/O
+        // Write visibility graph to binary file (WGB1)
         string graph_filename = data_dir + "/weighted_graph" + 
-                               filesystem::path(file).filename().stem().string().substr(6) + ".csv";
+                               filesystem::path(file).filename().stem().string().substr(6) + ".bin";
         
-        ofstream graph_file(graph_filename);
-        graph_file.rdbuf()->pubsetbuf(nullptr, 0); // Disable buffering for immediate write
-        graph_file << "node,neighbor,weight\n";
-        
-        // Write edges more efficiently
+        ofstream graph_file(graph_filename, ios::binary);
+        if (!graph_file.is_open()) continue;
+        const char gmagic[4] = {'W','G','B','1'};
+        graph_file.write(gmagic, 4);
+        // Count edges (each undirected edge once where i < j)
+        uint64_t edge_count = 0;
         for (int i = 0; i < n; i++) {
             for (const auto& neighbor : graph[i]) {
-                if (i < neighbor.first) { // Only write each edge once
-                    graph_file << i << ',' << neighbor.first << ',' << neighbor.second << '\n';
+                if (i < neighbor.first) edge_count++;
+                else break;
+            }
+        }
+        graph_file.write(reinterpret_cast<const char*>(&edge_count), sizeof(edge_count));
+        // Write edges
+        for (int i = 0; i < n; i++) {
+            for (const auto& neighbor : graph[i]) {
+                if (i < neighbor.first) {
+                    int32_t a = i;
+                    int32_t b = neighbor.first;
+                    double w = neighbor.second;
+                    graph_file.write(reinterpret_cast<const char*>(&a), sizeof(a));
+                    graph_file.write(reinterpret_cast<const char*>(&b), sizeof(b));
+                    graph_file.write(reinterpret_cast<const char*>(&w), sizeof(w));
                 } else {
                     break;
                 }

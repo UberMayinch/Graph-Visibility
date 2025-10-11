@@ -1,6 +1,21 @@
 #include <bits/stdc++.h>
+#include <cstdint>
 using namespace std;
 const double pi = M_PI;
+
+// Global time series buffers (reserved in main)
+static vector<double> G_TIME;
+static vector<double> G_U;
+static vector<double> G_V;
+
+static const uint32_t DEFAULT_RESERVE_STEPS = 200000; // pre-allocate on program start
+struct _GlobalInit {
+    _GlobalInit() {
+        G_TIME.reserve(DEFAULT_RESERVE_STEPS);
+        G_U.reserve(DEFAULT_RESERVE_STEPS);
+        G_V.reserve(DEFAULT_RESERVE_STEPS);
+    }
+} _globalInit;
 
 
 // moved to main to reduce function call overhead
@@ -57,12 +72,10 @@ int main(int argc, char** argv){
         cerr << "Error: 'data' directory does not exist" << endl;
         return 1;
     }
-    string filename = output_directory + "/" + string(argv[2]) + "_" + string(argv[3]) + "/output_" + string(argv[1]) + ".csv";
+    string filename = output_directory + "/" + string(argv[2]) + "_" + string(argv[3]) + "/output_" + string(argv[1]) + ".bin";
     
-    // Pre-allocate output buffer for better I/O performance
-    vector<string> output_buffer;
-    output_buffer.reserve(num_steps + 1);
-    output_buffer.push_back("time,u,v");
+    // Reset global buffers (capacity is already reserved at program start)
+    G_TIME.clear(); G_U.clear(); G_V.clear();
     
     double t = 0.0;
     const double h = 0.01;  
@@ -113,14 +126,31 @@ int main(int argc, char** argv){
         v0 += h * (k1v + 2*k2v + 2*k3v + k4v) / 6.0;
         t += h;
         
-        // Buffer output instead of writing immediately
-        output_buffer.push_back(to_string(t) + "," + to_string(u0) + "," + to_string(v0));
+        // Append to global buffers
+        G_TIME.push_back(t);
+        G_U.push_back(u0);
+        G_V.push_back(v0);
     }
     
-    // Write all output at once for better I/O performance
-    ofstream outfile(filename);
-    for (const string& line : output_buffer) {
-        outfile << line << '\n';
+    // Write all buffered rows to binary TSB1 file
+    ofstream outfile(filename, ios::binary);
+    if (!outfile.is_open()) {
+        cerr << "Error: Cannot open output file for writing: " << filename << endl;
+        return 1;
+    }
+    const char magic[4] = {'T','S','B','1'};
+    outfile.write(magic, 4);
+    uint32_t cols = 3;
+    uint32_t rows = static_cast<uint32_t>(G_TIME.size());
+    outfile.write(reinterpret_cast<const char*>(&cols), sizeof(cols));
+    outfile.write(reinterpret_cast<const char*>(&rows), sizeof(rows));
+    for (uint32_t i = 0; i < rows; ++i) {
+        const double tval = G_TIME[i];
+        const double uval = G_U[i];
+        const double vval = G_V[i];
+        outfile.write(reinterpret_cast<const char*>(&tval), sizeof(tval));
+        outfile.write(reinterpret_cast<const char*>(&uval), sizeof(uval));
+        outfile.write(reinterpret_cast<const char*>(&vval), sizeof(vval));
     }
     outfile.close();
 

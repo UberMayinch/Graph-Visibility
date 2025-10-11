@@ -110,13 +110,13 @@ echo "✓ Directories created successfully"
 
 # Set environment variables for optimal performance
 echo "Setting performance environment variables..."
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_NUM_THREADS=1
 export NUMBA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export VECLIB_MAXIMUM_THREADS=$SLURM_CPUS_PER_TASK
 
-echo "✓ Using $OMP_NUM_THREADS threads for parallel processing"
+echo "✓ Configured metrics to run sequentially (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
 
 
 # Run the optimized analysis
@@ -143,9 +143,9 @@ if [ $EXIT_CODE -eq 0 ]; then
     # Show result summary
     echo ""
     echo "📊 Results Summary:"
-    echo "Data files: $(find data -name '*.csv' | wc -l)"
-    echo "Graph files: $(find data -name '*graph*.csv' | wc -l)"
-    echo "Metrics files: $(find data -name '*metrics*.csv' | wc -l)"
+    echo "Data files: $(find data -name '*.bin' | wc -l)"
+    echo "Graph files: $(find data -name '*graph*.bin' | wc -l)"
+    echo "Metrics files: $(find data -name '*metrics*.bin' | wc -l)"
     echo "Plot files: $(find plots -name '*.png' 2>/dev/null | wc -l)"
     
     # Archive results
@@ -154,6 +154,32 @@ if [ $EXIT_CODE -eq 0 ]; then
     tar -czf "results_${SLURM_JOB_ID}.tar.gz" data plots logs
     ARCHIVE_SIZE=$(du -h "results_${SLURM_JOB_ID}.tar.gz" | cut -f1)
     echo "✓ Results archived to results_${SLURM_JOB_ID}.tar.gz (${ARCHIVE_SIZE})"
+
+    # Parallel metrics fan-out: run multiple sequential metrics jobs concurrently
+    echo ""
+    echo "🧮 Parallel metrics fan-out stage..."
+    JOBS=${METRICS_JOBS:-$SLURM_CPUS_PER_TASK}
+    if [[ -z "$JOBS" || "$JOBS" -lt 1 ]]; then JOBS=1; fi
+    MISSING=$(find data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | wc -l)
+    echo "Missing metrics: $MISSING | Concurrency: $JOBS"
+    if [[ "$MISSING" -gt 0 ]]; then
+        COUNT=0
+        while IFS= read -r GRAPH; do
+            METRICS="${GRAPH%.bin}_metrics.bin"
+            if [[ -f "$METRICS" ]]; then
+                continue
+            fi
+            ./graph_metrics "$GRAPH" "$METRICS" &
+            COUNT=$((COUNT+1))
+            if (( COUNT % JOBS == 0 )); then
+                wait
+            fi
+        done < <(find data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | sort)
+        wait
+        echo "✓ Parallel metrics fan-out completed."
+    else
+        echo "No missing metrics to process."
+    fi
 else
     echo "❌ Analysis failed with exit code: $EXIT_CODE"
     echo "Check the error logs above for details."

@@ -4,6 +4,8 @@ import pandas as pd
 import os
 import re
 import csv
+import struct
+import numpy as np
 from glob import glob
 
 def swap_columns(folder_path):
@@ -52,14 +54,19 @@ def _process_single_folder_weighted(args):
     import numpy as np
     x0, y0, model = args
     folder = f"data/{model}/{x0}_{y0}"
-    # Exclude _metrics.csv files from the graph files list  
-    files = sorted([f for f in glob(os.path.join(folder, "weighted_graph_*.csv")) 
-                   if not f.endswith('_metrics.csv')])
+    # Exclude _metrics.bin files from the graph files list  
+    files = sorted([f for f in glob(os.path.join(folder, "weighted_graph_*.bin")) 
+                   if not f.endswith('_metrics.bin')])
     rows = []
     
     for fp in files:
-        m = re.search(r'weighted_graph_(.+)\.csv$', os.path.basename(fp))
-        param = m.group(1) if m else os.path.basename(fp)
+        m = re.search(r'weighted_graph_(.+)\.bin$', os.path.basename(fp))
+        param_str = m.group(1) if m else os.path.basename(fp)
+        try:
+            param = float(param_str)
+        except Exception:
+            import numpy as _np
+            param = _np.nan
         
         # Initialize metrics with default values
         metrics = {
@@ -77,50 +84,48 @@ def _process_single_folder_weighted(args):
         }
         
         # Read advanced metrics if available (optimized)
-        metrics_file = fp.replace('.csv', '_metrics.csv')
+        metrics_file = fp.replace('.bin', '_metrics.bin')
         if os.path.exists(metrics_file):
             try:
-                # Use faster CSV reading with numpy
-                metrics_df = pd.read_csv(metrics_file, engine='c')
-                metrics_dict = dict(zip(metrics_df['metric'], metrics_df['value']))
+                with open(metrics_file, 'rb') as mf:
+                    if mf.read(4) != b'MET1':
+                        raise ValueError('Invalid MET1 magic')
+                    n = struct.unpack('<I', mf.read(4))[0]
+                    md = {}
+                    for _ in range(n):
+                        klen = struct.unpack('<H', mf.read(2))[0]
+                        key = mf.read(klen).decode('ascii')
+                        val = struct.unpack('<d', mf.read(8))[0]
+                        md[key] = val
                 for metric_name in metrics.keys():
-                    if metric_name in metrics_dict:
-                        metrics[metric_name] = float(metrics_dict[metric_name])
-                    elif metric_name == 'max_degree_stats' and 'max_degree' in metrics_dict:
-                        metrics['max_degree_stats'] = float(metrics_dict['max_degree'])
+                    if metric_name in md:
+                        metrics[metric_name] = float(md[metric_name])
+                    elif metric_name == 'max_degree_stats' and 'max_degree' in md:
+                        metrics['max_degree_stats'] = float(md['max_degree'])
             except Exception as e:
                 print(f"Warning: Could not read metrics from {metrics_file}: {e}")
         
         # Calculate basic degree statistics as fallback (optimized)
         try:
-            # Fast CSV reading with optimized settings
-            df = pd.read_csv(fp, header=None, comment='#', skip_blank_lines=True, 
-                           engine='c', dtype=str)
-            if not df.empty:
-                # Expect columns: node, neighbour, weight
-                if df.shape[1] >= 3:
-                    df = df.iloc[:, :3]
-                    df.columns = ['u', 'v', 'w']
-                    df['w'] = pd.to_numeric(df['w'], errors='coerce').fillna(0.0)
-                elif df.shape[1] >= 2:
-                    # Fallback: treat as unweighted with weight = 1.0
-                    df = df.iloc[:, :2]
-                    df.columns = ['u', 'v']
-                    df['w'] = 1.0
-                else:
-                    rows.append(tuple(metrics.values()))
-                    continue
-                
-                su = df.groupby('u')['w'].sum()
-                sv = df.groupby('v')['w'].sum()
-                strength = su.add(sv, fill_value=0.0)
-                n = len(strength)
-                if n > 0:
-                    # Only update if advanced metrics weren't available
+            # Read WGB1
+            with open(fp, 'rb') as gf:
+                if gf.read(4) != b'WGB1':
+                    raise ValueError('Invalid WGB1 magic')
+                m = struct.unpack('<Q', gf.read(8))[0]
+                # Accumulate node strengths from edges
+                strength = {}
+                for _ in range(m):
+                    u = struct.unpack('<i', gf.read(4))[0]
+                    v = struct.unpack('<i', gf.read(4))[0]
+                    w = struct.unpack('<d', gf.read(8))[0]
+                    strength[u] = strength.get(u, 0.0) + w
+                    strength[v] = strength.get(v, 0.0) + w
+                if strength:
+                    n_nodes = len(strength)
                     if metrics['avg_degree'] == 0.0:
-                        metrics['avg_degree'] = float(strength.sum() / n)
+                        metrics['avg_degree'] = float(sum(strength.values()) / n_nodes)
                     if metrics['max_degree'] == 0.0:
-                        metrics['max_degree'] = float(strength.max())
+                        metrics['max_degree'] = float(max(strength.values()))
         except Exception as e:
             print(f"Warning: Error processing {fp}: {e}")
                     
@@ -129,22 +134,22 @@ def _process_single_folder_weighted(args):
     return folder, rows, list(metrics.keys())
 
 def summarizeWeightedDegrees(x, y, model='linard', output_name='weighted_degree_stats.csv'):
-    """Process weighted degree summary sequentially (optimized but simple)."""
-    
+    """Process weighted degree summary sequentially (optimized; binary pipeline)."""
     for x0, y0 in zip(x, y):
         folder = f"data/{model}/{x0}_{y0}"
         print(f"Processing {folder}")
-        
-        # Exclude _metrics.csv files from the graph files list  
-        files = sorted([f for f in glob(os.path.join(folder, "weighted_graph_*.csv")) 
-                       if not f.endswith('_metrics.csv')])
+        # Collect weighted graph .bin files excluding metrics
+        files = sorted([f for f in glob(os.path.join(folder, "weighted_graph_*.bin"))
+                        if not f.endswith('_metrics.bin')])
         rows = []
-        
         for fp in files:
-            m = re.search(r'weighted_graph_(.+)\.csv$', os.path.basename(fp))
-            param = m.group(1) if m else os.path.basename(fp)
-            
-            # Initialize metrics with default values
+            m = re.search(r'weighted_graph_(.+)\.bin$', os.path.basename(fp))
+            param_str = m.group(1) if m else os.path.basename(fp)
+            try:
+                param = float(param_str)
+            except Exception:
+                import numpy as _np
+                param = _np.nan
             metrics = {
                 'param': param,
                 'avg_degree': 0.0,
@@ -158,59 +163,63 @@ def summarizeWeightedDegrees(x, y, model='linard', output_name='weighted_degree_
                 'min_degree': 0.0,
                 'max_degree_stats': 0.0
             }
-            
-            # Read advanced metrics if available
-            metrics_file = fp.replace('.csv', '_metrics.csv')
+            # Prefer MET1 metrics
+            metrics_file = fp.replace('.bin', '_metrics.bin')
             if os.path.exists(metrics_file):
                 try:
-                    metrics_df = pd.read_csv(metrics_file, engine='c')
-                    metrics_dict = dict(zip(metrics_df['metric'], metrics_df['value']))
-                    for metric_name in metrics.keys():
-                        if metric_name in metrics_dict:
-                            metrics[metric_name] = float(metrics_dict[metric_name])
-                        elif metric_name == 'max_degree_stats' and 'max_degree' in metrics_dict:
-                            metrics['max_degree_stats'] = float(metrics_dict['max_degree'])
+                    with open(metrics_file, 'rb') as mf:
+                        if mf.read(4) != b'MET1':
+                            raise ValueError('Invalid MET1 magic')
+                        n = struct.unpack('<I', mf.read(4))[0]
+                        md = {}
+                        for _ in range(int(n)):
+                            klen = struct.unpack('<H', mf.read(2))[0]
+                            key = mf.read(int(klen)).decode('ascii')
+                            val = struct.unpack('<d', mf.read(8))[0]
+                            md[key] = val
+                    for k in list(metrics.keys()):
+                        if k in md:
+                            metrics[k] = float(md[k])
+                        elif k == 'max_degree_stats' and 'max_degree' in md:
+                            metrics['max_degree_stats'] = float(md['max_degree'])
                 except Exception as e:
                     print(f"Warning: Could not read metrics from {metrics_file}: {e}")
-            
-            # Calculate basic degree statistics as fallback
-            try:
-                df = pd.read_csv(fp, header=None, comment='#', skip_blank_lines=True, 
-                               engine='c', dtype=str)
-                if not df.empty:
-                    if df.shape[1] >= 3:
-                        df = df.iloc[:, :3]
-                        df.columns = ['u', 'v', 'w']
-                        df['w'] = pd.to_numeric(df['w'], errors='coerce').fillna(0.0)
-                    elif df.shape[1] >= 2:
-                        df = df.iloc[:, :2]
-                        df.columns = ['u', 'v']
-                        df['w'] = 1.0
-                    else:
-                        rows.append(tuple(metrics.values()))
-                        continue
-                    
-                    su = df.groupby('u')['w'].sum()
-                    sv = df.groupby('v')['w'].sum()
-                    strength = su.add(sv, fill_value=0.0)
-                    n = len(strength)
-                    if n > 0:
-                        if metrics['avg_degree'] == 0.0:
-                            metrics['avg_degree'] = float(strength.sum() / n)
-                        if metrics['max_degree'] == 0.0:
-                            metrics['max_degree'] = float(strength.max())
-            except Exception as e:
-                print(f"Warning: Error processing {fp}: {e}")
-                        
+            # Fallback: compute simple stats from WGB1
+            if metrics['avg_degree'] == 0.0 or metrics['max_degree'] == 0.0:
+                try:
+                    with open(fp, 'rb') as gf:
+                        if gf.read(4) != b'WGB1':
+                            raise ValueError('Invalid WGB1 magic')
+                        mcount = struct.unpack('<Q', gf.read(8))[0]
+                        strength = {}
+                        for _ in range(int(mcount)):
+                            u = struct.unpack('<i', gf.read(4))[0]
+                            v = struct.unpack('<i', gf.read(4))[0]
+                            w = struct.unpack('<d', gf.read(8))[0]
+                            strength[u] = strength.get(u, 0.0) + w
+                            strength[v] = strength.get(v, 0.0) + w
+                        if strength:
+                            n_nodes = len(strength)
+                            if metrics['avg_degree'] == 0.0:
+                                metrics['avg_degree'] = float(sum(strength.values()) / n_nodes)
+                            if metrics['max_degree'] == 0.0:
+                                metrics['max_degree'] = float(max(strength.values()))
+                except Exception as e:
+                    print(f"Warning: Error processing {fp}: {e}")
             rows.append(tuple(metrics.values()))
-            
-        # Write results for this folder
         if rows:
-            out_path = os.path.join(folder, output_name)
-            with open(out_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(list(metrics.keys()))
-                writer.writerows(rows)
+            out_path = os.path.join(folder, output_name.replace('.csv', '.bin'))
+            cols = list(metrics.keys())
+            with open(out_path, 'wb') as f:
+                f.write(b'STB1')
+                f.write(struct.pack('<I', len(cols)))
+                for c in cols:
+                    b = c.encode('ascii')
+                    f.write(struct.pack('<H', len(b)))
+                    f.write(b)
+                f.write(struct.pack('<I', len(rows)))
+                arr = np.array(rows, dtype=np.float64)
+                f.write(arr.tobytes(order='C'))
             print(f"Weighted degree statistics saved to {out_path}")
 
 def summarizeUnweightedDegrees(x, y, model='linard', output_name='unweighted_degree_stats.csv'):
@@ -220,13 +229,18 @@ def summarizeUnweightedDegrees(x, y, model='linard', output_name='unweighted_deg
         folder = f"data/{model}/{x0}_{y0}"
         print(f"Processing {folder}")
         
-        # Exclude _metrics.csv files from the graph files list
-        files = sorted([f for f in glob(os.path.join(folder, "unweighted_graph_*.csv")) 
-                       if not f.endswith('_metrics.csv')])
+        # Exclude _metrics.bin files from the graph files list
+        files = sorted([f for f in glob(os.path.join(folder, "unweighted_graph_*.bin")) 
+                       if not f.endswith('_metrics.bin')])
         rows = []
         for fp in files:
-            m = re.search(r'unweighted_graph_(.+)\.csv$', os.path.basename(fp))
-            param = m.group(1) if m else os.path.basename(fp)
+            m = re.search(r'unweighted_graph_(.+)\.bin$', os.path.basename(fp))
+            param_str = m.group(1) if m else os.path.basename(fp)
+            try:
+                param = float(param_str)
+            except Exception:
+                import numpy as _np
+                param = _np.nan
             
             # Initialize metrics with default values
             metrics = {
@@ -244,42 +258,46 @@ def summarizeUnweightedDegrees(x, y, model='linard', output_name='unweighted_deg
             }
             
             # Read advanced metrics if available
-            metrics_file = fp.replace('.csv', '_metrics.csv')
+            metrics_file = fp.replace('.bin', '_metrics.bin')
             if os.path.exists(metrics_file):
                 try:
-                    metrics_df = pd.read_csv(metrics_file, engine='c')
-                    metrics_dict = dict(zip(metrics_df['metric'], metrics_df['value']))
+                    with open(metrics_file, 'rb') as mf:
+                        if mf.read(4) != b'MET1':
+                            raise ValueError('Invalid MET1 magic')
+                        n = struct.unpack('<I', mf.read(4))[0]
+                        md = {}
+                        for _ in range(n):
+                            klen = struct.unpack('<H', mf.read(2))[0]
+                            key = mf.read(klen).decode('ascii')
+                            val = struct.unpack('<d', mf.read(8))[0]
+                            md[key] = val
                     for metric_name in metrics.keys():
-                        if metric_name in metrics_dict:
-                            metrics[metric_name] = float(metrics_dict[metric_name])
-                        elif metric_name == 'max_degree_stats' and 'max_degree' in metrics_dict:
-                            metrics['max_degree_stats'] = float(metrics_dict['max_degree'])
+                        if metric_name in md:
+                            metrics[metric_name] = float(md[metric_name])
+                        elif metric_name == 'max_degree_stats' and 'max_degree' in md:
+                            metrics['max_degree_stats'] = float(md['max_degree'])
                 except Exception as e:
                     print(f"Warning: Could not read metrics from {metrics_file}: {e}")
             
             # Calculate basic degree statistics as fallback
             try:
-                df = pd.read_csv(fp, header=None, comment='#', skip_blank_lines=True, 
-                               engine='c', dtype=str)
-                if not df.empty:
-                    # Expect columns: node, neighbour for unweighted graphs
-                    if df.shape[1] >= 2:
-                        df = df.iloc[:, :2]
-                        df.columns = ['u', 'v']
-                        df['w'] = 1.0
-                    else:
-                        rows.append(tuple(metrics.values()))
-                        continue
-                    
-                    su = df.groupby('u')['w'].sum()
-                    sv = df.groupby('v')['w'].sum()
-                    strength = su.add(sv, fill_value=0.0)
-                    n = len(strength)
-                    if n > 0:
+                # Read UGB1
+                with open(fp, 'rb') as gf:
+                    if gf.read(4) != b'UGB1':
+                        raise ValueError('Invalid UGB1 magic')
+                    m = struct.unpack('<Q', gf.read(8))[0]
+                    degree = {}
+                    for _ in range(m):
+                        u = struct.unpack('<i', gf.read(4))[0]
+                        v = struct.unpack('<i', gf.read(4))[0]
+                        degree[u] = degree.get(u, 0) + 1
+                        degree[v] = degree.get(v, 0) + 1
+                    if degree:
+                        n_nodes = len(degree)
                         if metrics['avg_degree'] == 0.0:
-                            metrics['avg_degree'] = float(strength.sum() / n)
+                            metrics['avg_degree'] = float(sum(degree.values()) / n_nodes)
                         if metrics['max_degree'] == 0.0:
-                            metrics['max_degree'] = float(strength.max())
+                            metrics['max_degree'] = float(max(degree.values()))
             except Exception as e:
                 print(f"Warning: Error processing {fp}: {e}")
                         
@@ -287,9 +305,16 @@ def summarizeUnweightedDegrees(x, y, model='linard', output_name='unweighted_deg
             
         # Write results for this folder
         if rows:
-            out_path = os.path.join(folder, output_name)
-            with open(out_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(list(metrics.keys()))
-                writer.writerows(rows)
+            out_path = os.path.join(folder, output_name.replace('.csv', '.bin'))
+            cols = list(metrics.keys())
+            with open(out_path, 'wb') as f:
+                f.write(b'STB1')
+                f.write(struct.pack('<I', len(cols)))
+                for c in cols:
+                    b = c.encode('ascii')
+                    f.write(struct.pack('<H', len(b)))
+                    f.write(b)
+                f.write(struct.pack('<I', len(rows)))
+                arr = np.array(rows, dtype=np.float64)
+                f.write(arr.tobytes(order='C'))
             print(f"Unweighted degree statistics saved to {out_path}")

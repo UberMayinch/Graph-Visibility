@@ -161,8 +161,8 @@ The script follows this pipeline for each enabled model:
 ## Output Files
 
 ### Data Files
-- `data/{model}/{ic1}_{ic2}/output_{param}.csv` - Raw simulation data
-- `data/{model}/{ic1}_{ic2}/*degree_stats.csv` - Degree statistics
+- `data/{model}/{ic1}_{ic2}/output_{param}.bin` - Raw simulation data (TSB1)
+- `data/{model}/{ic1}_{ic2}/*degree_stats.bin` - Degree statistics tables (STB1)
 
 ### Plots
 - `plots/{model}/{ic1}_{ic2}/` - Time series and analysis plots per IC
@@ -170,7 +170,30 @@ The script follows this pipeline for each enabled model:
 - `plots/{model}/*_envelope_across_ics.png` - Metric envelopes
 
 ### Graph Files
-- `data/{model}/{ic1}_{ic2}/graph*.csv` - Visibility graph edge lists
+- `data/{model}/{ic1}_{ic2}/weighted_graph_*.bin` (WGB1)
+- `data/{model}/{ic1}_{ic2}/unweighted_graph_*.bin` (UGB1)
+- Per-graph metrics: `*_metrics.bin` (MET1)
+
+## Binary formats and migration
+
+All pipeline artifacts now use compact binary files. Readers remain backward-compatible with legacy CSV when present, but writers emit .bin by default.
+
+- TSB1 (Time Series Binary)
+  - Layout: `magic='TSB1' (4 bytes)`, `uint32 cols` (=3), `uint32 rows`, followed by `rows` records of 3 x `float64` in order: `[time, u/x, v/y]`.
+- UGB1 (Unweighted Graph Binary)
+  - Layout: `magic='UGB1'`, `uint64 edge_count`, then for each edge: `int32 u`, `int32 v` (undirected; each edge stored once).
+- WGB1 (Weighted Graph Binary)
+  - Layout: `magic='WGB1'`, `uint64 edge_count`, then for each edge: `int32 u`, `int32 v`, `float64 weight`.
+- MET1 (Metrics Binary)
+  - Layout: `magic='MET1'`, `uint32 item_count`, then for each item: `uint16 key_len`, `key bytes (ASCII)`, `float64 value`.
+- STB1 (Stats Table Binary)
+  - Layout: `magic='STB1'`, `uint32 column_count`, then for each column: `uint16 name_len`, `name bytes (ASCII)`, `uint32 row_count`, followed by row-major `float64` values of shape `(row_count, column_count)`.
+
+All integer counts use little-endian unsigned 32-bit except `edge_count` in graphs, which uses 64-bit to support large graphs. Floating point values are little-endian float64.
+
+Migration notes:
+- Existing CSV inputs will still be read where applicable, but new runs will generate `.bin` files.
+- Update any ad hoc scripts to look for `.bin` extensions (see `run_hpc.sh` for examples).
 
 ## Customization
 
