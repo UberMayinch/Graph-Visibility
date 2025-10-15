@@ -1,10 +1,10 @@
 {
   "general": {
     "random_seed": 42,
-    "stabilizing_time": 2000,
+    "stabilizing_time": 100000,
     "window_size": 1,
     "precision_degree": 6,
-    "num_params": 21
+    "num_params": 201
   },
   "execution_mode": {
     "run_until_graphs": false,
@@ -40,14 +40,14 @@
     "show_plots": true
   },
   "simulation": {
-    "fhn_num_steps": 5000,
+    "fhn_num_steps": 200000,
     "linard_num_steps": 10000
   },
   "fhn": {
     "enabled": true,
     "initial_conditions": {
-      "u_count": 5,
-      "v_count": 5,
+      "u_count": 10,
+      "v_count": 10,
       "u_base": -0.2,
       "u_range": 0.001,
       "v_base": -0.002,

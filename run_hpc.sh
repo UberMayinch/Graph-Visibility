@@ -2,11 +2,9 @@
 #SBATCH --job-name=graph-visibility
 #SBATCH --output=logs/analysis_%j.out
 #SBATCH --error=logs/analysis_%j.err
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=2048
 #SBATCH --time=72:00:00
+#SBATCH --mincpus=32
 #SBATCH --mail-user=chinmay.sharma@research.iiit.ac.in
 #SBATCH --mail-type=ALL
 
@@ -19,15 +17,51 @@
 # - Optimized graph construction and metrics calculation
 # - Efficient memory and I/O management
 
+
 set -e  # Exit on any error
 
-# Default values
-CONFIG_FILE="${1:-config.json}"
+# Default values (capture before changing directories)
+CONFIG_FILE_INPUT="${1:-config.json}"
 MODEL="${2:-all}"
 ADDITIONAL_ARGS="${@:3}"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 
-# Create necessary directories
-mkdir -p logs data plots
+# Prepare scratch workspace and clone repo there
+SCRATCH_BASE="/scratch/chinmay.sharma"
+JOB_SCRATCH="$SCRATCH_BASE/Graph-Visibility-$SLURM_JOB_ID"
+echo "Setting up scratch workspace at: $JOB_SCRATCH"
+mkdir -p "$SCRATCH_BASE"
+cd "$SCRATCH_BASE"
+
+REPO_URL_SSH="git@github.com:UberMayinch/Graph-Visibility.git"
+REPO_URL_HTTPS="https://github.com/UberMayinch/Graph-Visibility.git"
+
+echo "Cloning repository to scratch (SSH)..."
+if git clone --depth 1 "$REPO_URL_SSH" "$JOB_SCRATCH" 2>/dev/null; then
+    echo "✓ Cloned via SSH"
+else
+    echo "SSH clone failed; trying HTTPS..."
+    if git clone --depth 1 "$REPO_URL_HTTPS" "$JOB_SCRATCH" 2>/dev/null; then
+        echo "✓ Cloned via HTTPS"
+    else
+        echo "Git clone failed; falling back to copying current working tree to scratch"
+        rsync -a --exclude '.git' "$SUBMIT_DIR/" "$JOB_SCRATCH/"
+    fi
+fi
+
+cd "$JOB_SCRATCH"
+
+# Ensure logs dir exists in scratch for tar
+mkdir -p logs
+
+# Resolve config path relative to submit dir and copy into scratch repo
+if [[ -f "$SUBMIT_DIR/$CONFIG_FILE_INPUT" ]]; then
+    CONFIG_BASENAME="$(basename "$CONFIG_FILE_INPUT")"
+    cp -f "$SUBMIT_DIR/$CONFIG_FILE_INPUT" "$JOB_SCRATCH/$CONFIG_BASENAME"
+    CONFIG_FILE="$CONFIG_BASENAME"
+else
+    CONFIG_FILE="config.json"
+fi
 
 echo "=========================================="
 echo "Optimized Graph Visibility Analysis - HPC Job"
@@ -40,7 +74,7 @@ echo "Model: $MODEL"
 echo "Started at: $(date)"
 echo "=========================================="
 
-# Validate config file exists
+# Validate config file exists in scratch
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "❌ Error: Configuration file '$CONFIG_FILE' not found!"
     echo "Available config files:"
@@ -103,7 +137,7 @@ for exe in "${REQUIRED_EXES[@]}"; do
 done
 echo "✓ All executables compiled successfully"
 
-# Create necessary directories
+# Create necessary directories in scratch
 echo "Creating analysis directories..."
 make dirs
 echo "✓ Directories created successfully"
@@ -143,24 +177,28 @@ if [ $EXIT_CODE -eq 0 ]; then
     # Show result summary
     echo ""
     echo "📊 Results Summary:"
-    echo "Data files: $(find data -name '*.bin' | wc -l)"
-    echo "Graph files: $(find data -name '*graph*.bin' | wc -l)"
-    echo "Metrics files: $(find data -name '*metrics*.bin' | wc -l)"
-    echo "Plot files: $(find plots -name '*.png' 2>/dev/null | wc -l)"
+    echo "Data files: $(find -L data -name '*.bin' | wc -l)"
+    echo "Graph files: $(find -L data -name '*graph*.bin' | wc -l)"
+    echo "Metrics files: $(find -L data -name '*metrics*.bin' | wc -l)"
+    echo "Plot files: $(find -L plots -name '*.png' 2>/dev/null | wc -l)"
     
-    # Archive results
+    # Archive results from scratch
     echo ""
     echo "📦 Archiving results..."
-    tar -czf "results_${SLURM_JOB_ID}.tar.gz" data plots logs
+    tar -chzf "results_${SLURM_JOB_ID}.tar.gz" data plots logs
     ARCHIVE_SIZE=$(du -h "results_${SLURM_JOB_ID}.tar.gz" | cut -f1)
     echo "✓ Results archived to results_${SLURM_JOB_ID}.tar.gz (${ARCHIVE_SIZE})"
+
+    # # Copy archive back to submission directory
+    # cp -f "results_${SLURM_JOB_ID}.tar.gz" "$SUBMIT_DIR/" || true
+    # echo "✓ Copied archive to $SUBMIT_DIR/results_${SLURM_JOB_ID}.tar.gz"
 
     # Parallel metrics fan-out: run multiple sequential metrics jobs concurrently
     echo ""
     echo "🧮 Parallel metrics fan-out stage..."
     JOBS=${METRICS_JOBS:-$SLURM_CPUS_PER_TASK}
     if [[ -z "$JOBS" || "$JOBS" -lt 1 ]]; then JOBS=1; fi
-    MISSING=$(find data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | wc -l)
+    MISSING=$(find -L data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | wc -l)
     echo "Missing metrics: $MISSING | Concurrency: $JOBS"
     if [[ "$MISSING" -gt 0 ]]; then
         COUNT=0
@@ -174,7 +212,7 @@ if [ $EXIT_CODE -eq 0 ]; then
             if (( COUNT % JOBS == 0 )); then
                 wait
             fi
-        done < <(find data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | sort)
+        done < <(find -L data -type f -name '*graph*.bin' ! -name '*_metrics.bin' | sort)
         wait
         echo "✓ Parallel metrics fan-out completed."
     else
